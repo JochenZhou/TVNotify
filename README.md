@@ -8,6 +8,14 @@
 
 ## 效果预览
 
+真实电视截图（小米电视 1920×1080，Android 6.0）：
+
+| `level: info` | `level: warn` | `level: error` |
+| --- | --- | --- |
+| ![info 级横幅](docs/screenshot-info.png) | ![warn 级横幅](docs/screenshot-warn.png) | ![error 级横幅](docs/screenshot-error.png) |
+
+- 描边与铃铛随 `level` 变色：`info` 白 / `warn` 琥珀 `#FFB020` / `error` 红 `#FF453A`
+
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                                                              │
@@ -23,7 +31,6 @@
 
 - 深色半透明圆角卡片 + 1dp 描边，宽度固定为屏宽 64%，距顶 32dp
 - 左侧矢量铃铛，右侧标题（18sp 白色粗体单行）+ 正文（15sp `#EBEBF5` 最多四行）
-- 描边与铃铛随 `level` 变色：`info` 白 / `warn` 琥珀 `#FFB020` / `error` 红 `#FF453A`
 - 入场：上方滑入 + 淡入 250ms `DecelerateInterpolator`；退场：向上滑出 + 淡出
 - 入场播放提示音（默认开，可按条静音）；`sticky` 常驻横幅由 `maxDuration` 兜底，也可 `POST /dismiss` 关闭
 - 通知抢占：显示中再来一条，立刻替换并重新计时，绝不排队堆积
