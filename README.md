@@ -281,11 +281,12 @@ HTTP 服务照常工作。
 
 推荐用官方集成 **[TVNotify for Home Assistant](https://github.com/JochenZhou/ha-tvnotify)**（HACS 可装）：电视端广播 `_tvnotify._tcp.local.`，TXT 里带 token，HA 起来后**自动发现电视、自动建好配置项**，不需要手抄地址或扫码。
 
-```yaml
-# HACS → 集成 → 自定义存储库 → https://github.com/JochenZhou/ha-tvnotify
-# 搜索 TVNotify → 下载 → 重启 HA
-# 设置 → 集成与设备 → 添加集成 → TVNotify
-```
+[![一键添加到 HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JochenZhou&repository=ha-tvnotify&category=integration)
+[![打开 Home Assistant 添加集成](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=tvnotify)
+
+**一键安装**：点上面第一个徽章 → 浏览器跳到你的 HA 实例 → 确认仓库地址 → **ADD** → HACS 里搜索 **TVNotify** → 下载 → **重启 HA**。
+
+点第二个徽章可直接跳到「添加集成」配置页。
 
 装好后电视会成为一个通知实体（形如 `notify.tvnotify_tyeq`），自动化里这样用：
 
@@ -445,9 +446,8 @@ Release 打开了 `isMinifyEnabled` + `isShrinkResources`。`proguard-rules.pro`
 
 Android 6.0 电视 + 小米省电策略是主因，前台服务只是提升优先级，不保证不被杀。处理方式：
 
-1. 在电视上给 TVNotify 放行自启动、并把省电策略改为「无限制」；
-2. 在 Home Assistant 自动化里保留 `am startservice` 那一步（本项目的服务是幂等的，重复拉起无副作用）；
-3. 需要更硬的保活可以接一个定时 ping 的自动化（每 30 分钟发一条空通知会打扰用户，建议只在需要时拉起）。
+1. 在 Home Assistant 自动化里保留 `am startservice` 那一步（本项目的服务是幂等的，重复拉起无副作用）；
+2. 需要更硬的保活可以接一个定时 ping 的自动化（每 30 分钟发一条空通知会打扰用户，建议只在需要时拉起）。
 
 ### ADB 强制拉起服务
 
