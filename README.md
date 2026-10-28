@@ -289,9 +289,47 @@ HTTP 服务照常工作。
 
 ## Home Assistant 接入
 
-### 1. 配置 notify 平台
+推荐用官方集成 **[TVNotify for Home Assistant](https://github.com/JochenZhou/ha-tvnotify)**（HACS 可装）：电视端广播 `_tvnotify._tcp.local.`，TXT 里带 token，HA 起来后**自动发现电视、自动建好配置项**，不需要手抄地址或扫码。
 
-`configuration.yaml`：
+```yaml
+# HACS → 集成 → 自定义存储库 → https://github.com/JochenZhou/ha-tvnotify
+# 搜索 TVNotify → 下载 → 重启 HA
+# 设置 → 集成与设备 → 添加集成 → TVNotify
+```
+
+装好后电视会成为一个通知实体（形如 `notify.tvnotify_tyeq`），自动化里这样用：
+
+```yaml
+automation:
+  - alias: "洗衣机完成 → 电视横幅"
+    trigger:
+      - platform: state
+        entity_id: sensor.washer_status
+        to: "finished"
+    action:
+      - action: notify.send_message
+        target:
+          entity_id: notify.tvnotify_tyeq
+        data:
+          title: 洗衣机已完成
+          message: 晾晒提醒：衣服可以收了
+```
+
+集成还带一个便捷服务 `tvnotify.tv_notify`，可以带附加参数（`duration` / `level` / `sticky` / `sound`），这些参数在自动化编辑器里是下拉框、滑块和开关，可直接点选。集成在电视端服务被系统杀掉时**自动经 ADB 拉起并重试**。细节见[集成仓库 README](https://github.com/JochenZhou/ha-tvnotify)。
+
+### 不用集成时：直接用 HTTP
+
+任何能发 HTTP POST 的系统都能推：
+
+```bash
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"洗衣机已完成","text":"晾晒提醒：衣服可以收了","duration":6}'
+```
+
+### 只用 HA 内置能力（`notify.rest` 平台）
+
+不装集成、也不写代码时，可以让 HA 用内置的 `notify.rest` 平台直接 POST：
 
 ```yaml
 notify:
@@ -303,15 +341,14 @@ notify:
     message_param_name: text
     data:
       duration: 6
-    # 电视端返回的就是 JSON，不需要 HA 再去解析网页
     verify_ssl: false
 ```
 
 > `data:` 里的键会原样拼进 JSON body，所以 `duration` 直接生效。
 
-### 2. 关键点：先 adb 拉起服务，再发通知
+### 关键点：先确保服务活着
 
-电视的省电策略可能已经把服务干掉，`notify.rest` 直接发大概率超时。所以自动化里必须先通过 `androidtv.adb_command` 拉起服务，**delay 1 秒**等服务绑定端口，再发通知：
+电视的省电策略可能已经把服务干掉，直接发大概率超时。集成已经处理了这一点；用 `notify.rest` 时需要在自动化里先通过 `androidtv.adb_command` 拉起服务，**delay 1 秒**等服务绑定端口，再发通知：
 
 ```yaml
 automation:
@@ -322,7 +359,7 @@ automation:
         to: "finished"
     action:
       # 1. 先确保服务活着（幂等，重复调用安全）
-      - service: androidtv.adb_command
+      - action: androidtv.adb_command
         target:
           entity_id: media_player.living_room_tv
         data:
@@ -330,15 +367,15 @@ automation:
       # 2. 等服务绑定 8791 端口
       - delay: "00:00:01"
       # 3. 再推送横幅
-      - service: notify.tv_notify
+      - action: notify.tv_notify
         data:
-          title: "洗衣机已完成"
-          message: "晾晒提醒：衣服可以收了"
+          title: 洗衣机已完成
+          message: 晾晒提醒：衣服可以收了
 ```
 
 前提：HA 已配置 [Android TV 集成](https://www.home-assistant.io/integrations/androidtv/)（需要 ADB 连接），并且电视的 ADB 授权没有被清掉。
 
-### 3. Shell 版（不用 Android TV 集成时）
+### Shell 版（不用 Android TV 集成时）
 
 ```yaml
 shell_command:
