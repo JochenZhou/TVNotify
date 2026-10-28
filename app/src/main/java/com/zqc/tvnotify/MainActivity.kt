@@ -24,6 +24,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -115,7 +116,10 @@ class MainActivity : Activity() {
         column.orientation = LinearLayout.VERTICAL
         column.setPadding(dp(56), dp(40), dp(56), dp(40))
         column.isFocusable = false
-        scroll.addView(column, ScrollView.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        // LayoutParams 是 FrameLayout 声明的静态内部类；Java 允许用子类名 ScrollView.LayoutParams 访问，
+        // 但 Kotlin 不解析「继承来的嵌套类」，写 ScrollView.LayoutParams 会 Unresolved reference。
+        // 也不能退化成 ViewGroup.LayoutParams：FrameLayout.onMeasure 会强转成自己的 LayoutParams，运行期崩溃。
+        scroll.addView(column, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         column.addView(makeText("TVNotify", 34f, Color.WHITE, true))
         column.addView(
