@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- 不用 AppCompat，直接继承 Framework 的 Material 主题（API 21+ 可用） -->
+    <style name="TvNotifyTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#FF101114</item>
+        <item name="android:colorBackground">#FF101114</item>
+        <item name="android:statusBarColor">#FF101114</item>
+        <item name="android:navigationBarColor">#FF101114</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
+</resources>

@@ -1,0 +1,26 @@
+# Gradle
+# 本工程不使用 wrapper（仓库不含 gradle-wrapper.jar，构建由 CI 的 setup-gradle 提供 Gradle 8.7）
+.gradle/
+build/
+
+# 本地签名材料：绝对不能入库
+local/
+*.keystore
+*.jks
+
+# IDE
+.idea/
+*.iml
+*.hprof
+
+# 本机 SDK 路径
+local.properties
+
+# 构建产物
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+.DS_Store

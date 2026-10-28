@@ -1,0 +1,11 @@
+# 统一换行符：仓库内与工作区都用 LF。
+# 本工程在 Windows 上编辑、在 Linux Runner 上构建，CRLF 会让 .github/workflows 的 shell 步骤与
+# Kotlin/Gradle 脚本出现难以定位的解析问题，因此在源头锁死。
+* text=auto eol=lf
+
+# 二进制文件不做文本转换
+*.jar binary
+*.keystore binary
+*.jks binary
+*.apk binary
+*.png binary

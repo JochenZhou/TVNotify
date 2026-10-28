@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 纯矢量应用图标：避免 png 缺失导致打包失败，也免去多分辨率维护 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 蓝色圆形底盘 -->
+    <path
+        android:fillColor="#FF0A84FF"
+        android:pathData="M54,54 m-52,0 a52,52 0 1,0 104,0 a52,52 0 1,0 -104,0" />
+
+    <!-- 铃铛主体 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,24 C42,24 36,37 36,50 C36,60 32,66 27,71 L81,71 C76,66 72,60 72,50 C72,37 66,24 54,24 Z" />
+
+    <!-- 铃铛底沿 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M25,73 L83,73 L83,79 L25,79 Z" />
+
+    <!-- 铃锤 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M48,84 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0 Z" />
+
+</vector>

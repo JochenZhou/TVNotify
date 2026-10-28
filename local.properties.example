@@ -1,0 +1,6 @@
+# 复制本文件为 local.properties 后再按需修改；local.properties 不入库。
+# Windows 示例（注意转义与正斜杠）：
+sdk.dir=C\:\\Users\\your-name\\AppData\\Local\\Android\\Sdk
+
+# macOS / Linux 示例：
+# sdk.dir=/Users/your-name/Library/Android/sdk
