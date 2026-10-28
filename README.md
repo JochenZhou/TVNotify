@@ -1,6 +1,6 @@
 # TVNotify · 电视端局域网通知横幅
 
-> 把红米电视（Android 6.0 / API 23）变成局域网通知屏：外部系统（Home Assistant、NAS、CI、树莓派……）发一个 HTTP POST，电视屏幕顶部就会飘出一条 tvOS 风格的横幅。
+> 把小米电视（Android 6.0 / API 23）变成局域网通知屏：外部系统（Home Assistant、NAS、CI、树莓派……）发一个 HTTP POST，电视屏幕顶部就会飘出一条 tvOS 风格的横幅。
 
 本项目是为「电视通知栏被裁掉、`cmd notification post` 在 API 23 上不可用」这类场景写的兜底方案：不做系统通知，直接 `WindowManager` 悬浮窗自绘。整个 App 只有两个依赖（NanoHTTPD + ZXing），不引入 AndroidX，APK 体积小到可以忽略。
 
@@ -21,9 +21,11 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
-- 深色半透明圆角卡片 + 1dp 白色描边，宽度固定为屏宽 60%，距顶 32dp
-- 左侧矢量铃铛，右侧标题（18sp 白色粗体单行）+ 正文（15sp `#EBEBF5` 最多两行）
+- 深色半透明圆角卡片 + 1dp 描边，宽度固定为屏宽 64%，距顶 32dp
+- 左侧矢量铃铛，右侧标题（18sp 白色粗体单行）+ 正文（15sp `#EBEBF5` 最多四行）
+- 描边与铃铛随 `level` 变色：`info` 白 / `warn` 琥珀 `#FFB020` / `error` 红 `#FF453A`
 - 入场：上方滑入 + 淡入 250ms `DecelerateInterpolator`；退场：向上滑出 + 淡出
+- 入场播放提示音（默认开，可按条静音）；`sticky` 常驻横幅由 `maxDuration` 兜底，也可 `POST /dismiss` 关闭
 - 通知抢占：显示中再来一条，立刻替换并重新计时，绝不排队堆积
 
 ## 功能简介
@@ -34,6 +36,11 @@
 | 局域网 HTTP 接口 | `POST /{token}/notify`，JSON 入参，token 鉴权 |
 | 随机 token | 首次启动生成 8 位字母数字，持久化到 SharedPreferences，可一键重置 |
 | 悬浮窗横幅 | `SYSTEM_ALERT_WINDOW` + 自绘，不抢遥控器焦点（`FLAG_NOT_FOCUSABLE`） |
+| 分级着色 | `level` = `info` / `warn` / `error`，铃铛与描边变色，布局不变 |
+| 常驻横幅 | `sticky: true` 不自动消失，靠 `maxDuration`（默认 300s）兜底，或 `POST /dismiss` 关闭 |
+| 提示音 | 入场播放 `res/raw/chord.mp3`（走 `STREAM_MUSIC`），请求体 `sound: false` 可单条静音 |
+| 健康探活 | `GET /health` 无需 token，返回版本、uptime、端口、横幅状态，供 HA availability 用 |
+| mDNS 发现 | 广播 `_tvnotify._tcp`，TXT 带 token / 版本 / 路径 / 型号（**TV 端只负责广播**） |
 | 设置界面 | 服务状态、悬浮窗权限、本机 IPv4、完整调用地址、二维码、测试/复制/重置 |
 | 遥控器友好 | 三个按钮均有清晰的 D-Pad 焦点态，确认键直接触发 |
 
@@ -68,7 +75,7 @@ adb shell appops set com.zqc.tvnotify SYSTEM_ALERT_WINDOW allow
 adb shell am startservice -n com.zqc.tvnotify/.NotifyService
 ```
 
-### 5. 允许自启动、关闭省电限制（红米 / 小米电视必做）
+### 5. 允许自启动、关闭省电限制（小米电视必做）
 
 小米系的 ROM 会在息屏或待机一段时间后杀掉后台服务，必须手动放行：
 
@@ -109,13 +116,29 @@ Content-Type: application/json
 
 ### 请求参数
 
-| 字段 | 类型 | 必填 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `title` | string | 否 | `""` | 标题，单行，超出省略；空串则不显示标题行 |
-| `text` | string | 否 | `""` | 正文，最多两行，超出省略；空串则不显示正文行 |
-| `duration` | number | 否 | `5` | 横幅停留秒数，自动 clamp 到 `1..30` |
+| 字段 | 类型 | 必填 | 默认 | 取值范围 | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| `title` | string | 否 | `""` | — | 标题，单行，超出省略；空串则不显示标题行 |
+| `text` | string | 否 | `""` | — | 正文，最多四行，超出省略；空串则不显示正文行 |
+| `duration` | number | 否 | `5` | `1..30`（越界自动 clamp） | 横幅停留秒数；`sticky: true` 时被忽略 |
+| `level` | string | 否 | `"info"` | `info` / `warn` / `error` | 分级着色；**未知值按 `info` 处理，不报错** |
+| `sticky` | boolean | 否 | `false` | `true` / `false` | 常驻：不按 `duration` 自动消失，直到 `/dismiss` 或 `maxDuration` 到点 |
+| `maxDuration` | number | 否 | `300` | `30..3600`（越界自动 clamp） | 仅 `sticky: true` 生效，单位秒；**强制兜底** |
+| `sound` | boolean | 否 | `true` | `true` / `false` | 本条是否播放提示音 |
 
 `title` 与 `text` 去首尾空白后**同时为空**会被拒绝。
+
+`level` 对应的视觉效果（只改颜色，不改布局）：
+
+| `level` | 铃铛图标 | 卡片描边 |
+| --- | --- | --- |
+| `info`（默认） | 白色 | `#33FFFFFF` |
+| `warn` | 琥珀 `#FFB020` | `#66FFB020` |
+| `error` | 红 `#FF453A` | `#66FF453A` |
+
+> 为什么 `sticky` 还要有 `maxDuration`：横幅窗口是 `FLAG_NOT_TOUCHABLE` + `FLAG_NOT_FOCUSABLE`，
+> 遥控器点不到也关不掉。如果推送方崩溃、没人再调 `/dismiss`，没有兜底的横幅会永久占屏，
+> 用户只能重启电视。所以 `maxDuration` 是安全阀，不是可选项。
 
 ### 响应
 
@@ -143,7 +166,117 @@ curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
 curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
   -H 'Content-Type: application/json' \
   -d '{"title":"下载完成","text":"Ubuntu 24.04 ISO 已就绪","duration":15}'
+
+# 天气预警：红色 + 常驻 10 分钟 + 响提示音
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"暴雨红色预警","text":"预计未来 3 小时降水量将达 100 毫米以上，请避免外出并注意地下车库进水。","level":"error","sticky":true,"maxDuration":600}'
+
+# 半夜的备份完成通知：不响
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"备份完成","text":"NAS 快照已上传","sound":false}'
 ```
+
+---
+
+## 接口：POST /{token}/dismiss
+
+关闭当前正在显示的横幅（无论它是否 `sticky`）。**幂等**：没有横幅时也返回 `200`。
+
+```bash
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/dismiss"
+```
+
+```json
+{"ok":true,"dismissed":true}
+```
+
+| HTTP 状态 | 场景 | Body |
+| --- | --- | --- |
+| `200` | 当前有横幅，已开始退场 | `{"ok":true,"dismissed":true}` |
+| `200` | 当前没有横幅 | `{"ok":true,"dismissed":false}` |
+| `404` | token 不匹配或路径非法 | `{"ok":false,"error":"not found"}` |
+| `405` | 方法不是 POST | `{"ok":false,"error":"method not allowed"}` |
+
+> 幂等是刻意设计：HA 自动化可能重试、或者横幅已被 `maxDuration` 自动收走，
+> 这两种情况都返回 `200`，调用方不必为此写重试/容错分支。
+
+---
+
+## 接口：GET /health
+
+健康探活，**不需要 token**（Home Assistant 的 availability 探针要在拿到地址前就能用）。
+
+```bash
+curl "http://192.168.1.23:8791/health"
+```
+
+```json
+{"ok":true,"version":"1.1.0","uptime":3621,"port":8791,"banner":"showing"}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `ok` | boolean | 恒为 `true`（能返回就说明服务活着） |
+| `version` | string | App 版本，当前 `1.1.0` |
+| `uptime` | number | 服务启动至今的秒数（`SystemClock.elapsedRealtime` 计算，不受系统对时跳变影响） |
+| `port` | number | 监听端口，固定 `8791` |
+| `banner` | string | `showing` 表示横幅正在显示，`idle` 表示没有横幅 |
+
+非 `GET` 返回 `405`；路径不匹配（含多段路径）仍走原有 `404` 兜底。
+
+HA 里可以这样用：
+
+```yaml
+binary_sensor:
+  - platform: rest
+    name: TVNotify 在线
+    resource: "http://192.168.1.23:8791/health"
+    value_template: "{{ value_json.ok }}"
+    scan_interval: 60
+```
+
+---
+
+## 提示音
+
+- 横幅**入场时播放** `app/src/main/res/raw/chord.mp3`，默认开启。
+- 走 `AudioManager.STREAM_MUSIC` 通道：电视上 `STREAM_NOTIFICATION` 经常被系统静音，用媒体通道才能真的响。
+- 单条静音：请求体加 `"sound": false`。想全部静音就在推送模板里固定加上这个字段（本项目不读系统音量、也不申请 `MODIFY_AUDIO_SETTINGS`）。
+- 提示音实例全程只创建一次，播完自动停；抢占替换时先把播放位置归零再播，不会叠出两路声音。
+- 音频设备被其他前台 App 独占时只记日志，不会崩、也不影响横幅显示。
+
+---
+
+## mDNS 发现
+
+> ⚠️ **TV 端只负责广播，不做消费。** Home Assistant 侧必须有集成消费 zeroconf / mDNS 事件（例如
+> `zeroconf` 集成、或某个自定义集成监听 `_tvnotify._tcp` 的 `zeroconf_service_added` 事件）
+> 才能真正「自动发现」这台电视。只装本 App、不配 HA 的发现逻辑，什么都不会自动出现。
+
+| 项目 | 值 |
+| --- | --- |
+| 服务类型 | `_tvnotify._tcp`（完整：`_tvnotify._tcp.local`） |
+| 端口 | `8791` |
+| 实例名 | `TVNotify-<token 后 4 位>`，例：`TVNotify-p9x4` |
+| TXT `version` | `1.1.0` |
+| TXT `path` | `/notify`（完整的调用路径是 `/{token}/notify`） |
+| TXT `token` | 完整 token，便于 HA 自动拼出调用地址 |
+| TXT `model` | `Build.MODEL`，多台电视时人眼区分用 |
+
+```bash
+# 在局域网内验证广播是否存在（需要 avahi-utils）
+avahi-browse -rt _tvnotify._tcp
+```
+
+关于 token 明文广播的取舍：HA 要靠 TXT 里的 `token` 自动填配置，否则「发现」之后还要用户手抄一次，
+发现就没有意义了。这与 App 界面直接把带 token 的完整地址做成二维码属于同一层信任模型——
+**前提是局域网可信**。如果你的网络里有不可信设备，请不要依赖自动发现，改用固定的地址+token。
+
+Android 6.0 相关：组播需要 `MulticastLock` + `CHANGE_WIFI_MULTICAST_STATE` 权限，Manifest 里已声明，
+**不要因为「看起来冗余」而删掉**。广播端口被占用、或者没有可用网络时只记日志（`TVNotifyMdns` tag），
+HTTP 服务照常工作。
 
 ---
 
@@ -264,6 +397,16 @@ Release 打开了 `isMinifyEnabled` + `isShrinkResources`。`proguard-rules.pro`
 3. **端口是否监听**：`adb shell netstat -an | grep 8791`（或 `curl -v` 直接看是否 connection refused）
 4. **接口返回什么**：`curl -i`，看是 404（token 错）、405（方法错）还是 400（内容空）。
 
+### 粘性横幅怎么关掉？
+
+`sticky: true` 的横幅不按 `duration` 自动消失，两种关闭方式：
+
+1. **主动关**：`curl -X POST "http://<电视IP>:8791/<token>/dismiss"`（幂等，重复调用不会报错）；
+2. **等兜底**：`maxDuration` 到点（默认 `300` 秒，可设 `30..3600`）自动淡出。
+
+横幅窗口是 `NOT_TOUCHABLE` / `NOT_FOCUSABLE`，遥控器点不到它——这是刻意设计，避免抢走播放中 App 的焦点，
+所以关闭只能走接口或等超时。**不要**把 `maxDuration` 设得过大，否则推送方崩溃时电视会被一直占屏。
+
 ### 后台被杀 / 一段时间后就没反应？
 
 Android 6.0 电视 + 小米省电策略是主因，前台服务只是提升优先级，不保证不被杀。处理方式：
@@ -331,14 +474,17 @@ TVNotify/
 │       ├── AndroidManifest.xml
 │       ├── java/com/zqc/tvnotify/
 │       │   ├── MainActivity.kt        # 设置界面（D-Pad 焦点、二维码）
-│       │   ├── NotifyService.kt       # 前台服务、HTTP 生命周期
-│       │   ├── NotifyHttpServer.kt    # NanoHTTPD 路由与鉴权
-│       │   ├── BannerController.kt    # 悬浮窗横幅与动画
+│       │   ├── NotifyService.kt       # 前台服务、HTTP 与 mDNS 生命周期
+│       │   ├── NotifyHttpServer.kt    # NanoHTTPD 路由：notify / dismiss / health
+│       │   ├── BannerController.kt    # 悬浮窗横幅、分级着色、动画、提示音
+│       │   ├── MdnsAdvertiser.kt      # 手写 DNS-SD 广播（_tvnotify._tcp）
 │       │   ├── BootReceiver.kt        # 开机自启
 │       │   ├── Prefs.kt               # token 持久化
 │       │   └── NetUtils.kt            # 本机 IPv4 探测
 │       └── res/
 │           ├── drawable/ic_launcher.xml
+│           ├── drawable/ic_stat_notify.xml
+│           ├── raw/chord.mp3          # 横幅入场提示音
 │           └── values/{strings,styles}.xml
 ├── settings.gradle.kts
 ├── build.gradle.kts

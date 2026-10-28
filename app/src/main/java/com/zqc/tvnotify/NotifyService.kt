@@ -11,10 +11,11 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 
 /**
- * 常驻前台服务：持有 NanoHTTPD 实例与横幅控制器。
+ * 常驻前台服务：持有 NanoHTTPD 实例、横幅控制器与 mDNS 广播器。
  *
  * 为什么必须是前台服务：Android 8+ 的普通后台进程随时会被冻结回收，
  * 而电视上没人会去点「最近任务」，只能用 startForeground 提升优先级。
@@ -31,6 +32,9 @@ class NotifyService : Service() {
         const val PORT = 8791
         const val CHANNEL_ID = "tvnotify_svc"
         private const val NOTIFICATION_ID = 8791
+
+        /** 与 app/build.gradle.kts 的 versionName 保持一致；/health 与 mDNS TXT 都用它 */
+        const val VERSION_NAME = "1.1.0"
 
         /**
          * 供设置界面显示「是否正在监听」。
@@ -62,9 +66,16 @@ class NotifyService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val serverLock = Any()
 
+    /**
+     * 服务实例创建时刻，用于 /health 的 uptime。
+     * 用 elapsedRealtime 而不是 currentTimeMillis：后者会被对时/NTP 跳变影响，算出负数。
+     */
+    private val startedAtElapsedMs: Long = SystemClock.elapsedRealtime()
+
     private var server: NotifyHttpServer? = null
     private var serverStarting: Boolean = false
     private var bannerController: BannerController? = null
+    private var mdnsAdvertiser: MdnsAdvertiser? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -83,8 +94,11 @@ class NotifyService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        stopMdns()
         stopServer()
+        // 先移除横幅再释放提示音，顺序反了会在 release 后还尝试播放
         bannerController?.dismissImmediately()
+        bannerController?.release()
         bannerController = null
         isServerRunning = false
         mainHandler.removeCallbacksAndMessages(null)
@@ -158,12 +172,14 @@ class NotifyService : Service() {
         val current = server
         if (current != null && current.isAlive) {
             isServerRunning = true
+            startMdnsIfNeeded()
             return
         }
         synchronized(serverLock) {
             val again = server
             if (again != null && again.isAlive) {
                 isServerRunning = true
+                startMdnsIfNeeded()
                 return
             }
             if (serverStarting) {
@@ -181,11 +197,17 @@ class NotifyService : Service() {
         Thread({
             try {
                 val httpd = NotifyHttpServer(
-                    port = PORT,
+                    advertisedPort = PORT,
+                    versionName = VERSION_NAME,
                     tokenProvider = { Prefs.getToken(applicationContext) },
-                    onNotify = { title, text, duration ->
-                        mainHandler.post { bannerController?.show(title, text, duration) }
-                    }
+                    uptimeSecondsProvider = {
+                        (SystemClock.elapsedRealtime() - startedAtElapsedMs) / 1000L
+                    },
+                    bannerVisibleProvider = { bannerController?.isShowing() == true },
+                    onNotify = { request ->
+                        mainHandler.post { bannerController?.show(request) }
+                    },
+                    onDismiss = { bannerController?.dismissWithResult() ?: false }
                 )
                 httpd.start()
                 synchronized(serverLock) {
@@ -194,6 +216,8 @@ class NotifyService : Service() {
                 }
                 isServerRunning = true
                 Log.i(TAG, "HTTP 服务已监听 $PORT")
+                // 端口真的绑上了再广播，否则 HA 会发现一个连不上的服务
+                startMdnsIfNeeded()
             } catch (e: Exception) {
                 synchronized(serverLock) {
                     server = null
@@ -218,5 +242,47 @@ class NotifyService : Service() {
             Log.w(TAG, "停止 HTTP 服务异常", e)
         }
         isServerRunning = false
+    }
+
+    // ------------------------------------------------------------------
+    // mDNS 广播生命周期
+    // ------------------------------------------------------------------
+
+    /**
+     * 发现能力是锦上添花：任何异常都只记日志，绝不能影响 HTTP 服务。
+     * 广播绑定端口在 MdnsAdvertiser 的后台线程里完成，这里不会阻塞。
+     */
+    private fun startMdnsIfNeeded() {
+        val existing = mdnsAdvertiser
+        if (existing != null && existing.isRunning) {
+            return
+        }
+        if (existing != null) {
+            // 线程已退出（例如启动时端口被占用），先彻底回收再重建
+            existing.stop()
+            mdnsAdvertiser = null
+        }
+        try {
+            val advertiser = MdnsAdvertiser(
+                context = applicationContext,
+                servicePort = PORT,
+                tokenProvider = { Prefs.getToken(applicationContext) },
+                versionName = VERSION_NAME
+            )
+            advertiser.start()
+            mdnsAdvertiser = advertiser
+        } catch (e: Exception) {
+            Log.w(TAG, "mDNS 广播启动失败，不影响 HTTP 服务", e)
+        }
+    }
+
+    private fun stopMdns() {
+        val current = mdnsAdvertiser ?: return
+        mdnsAdvertiser = null
+        try {
+            current.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "停止 mDNS 广播异常", e)
+        }
     }
 }

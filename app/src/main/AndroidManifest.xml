@@ -6,6 +6,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!--
+        mDNS 广播（_tvnotify._tcp）必需：Android 6.0 上 MulticastLock 没有这个权限时
+        内核直接丢弃组播报文，服务能发不能收，HA 侧永远发现不了。
+        注意它不是冗余声明，删掉会静默失效，因此不要清理。
+    -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <!-- 悬浮窗自绘横幅（电视通知栏被屏蔽，无法用系统 Notification 展示内容） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 

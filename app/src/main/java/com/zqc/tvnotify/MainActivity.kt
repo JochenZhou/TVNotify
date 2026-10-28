@@ -96,6 +96,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         bannerController?.dismissImmediately()
+        // MediaPlayer 必须显式 release，否则音频焦点与会话会被一直占着
+        bannerController?.release()
         bannerController = null
         mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -342,10 +344,13 @@ class MainActivity : Activity() {
             return
         }
         val controller = bannerController ?: BannerController(this).also { bannerController = it }
+        // 走和 HTTP 推送完全相同的数据类，顺带验证提示音资源 R.raw.chord 是否可用
         controller.show(
-            "演示通知",
-            "这是一条来自 TVNotify 的测试横幅，Home Assistant 也可以这样推送。",
-            4
+            BannerRequest(
+                title = "演示通知",
+                text = "这是一条来自 TVNotify 的测试横幅，Home Assistant 也可以这样推送。",
+                durationSeconds = 4
+            )
         )
     }
 

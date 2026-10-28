@@ -9,27 +9,39 @@ import java.io.InputStream
 /**
  * 极简局域网通知接口。
  *
- * 路由：POST /{token}/notify
+ * 路由：
+ * - `GET  /health`                —— 健康探活，唯一不需要 token 的路径（供 HA availability 用）
+ * - `POST /{token}/notify`        —— 推送横幅
+ * - `POST /{token}/dismiss`       —— 关闭当前横幅（幂等）
+ *
  * 契约：
  * - 路径非法或 token 不匹配 -> 404（刻意不用 403，避免外部系统据此判断 token 是否存在）
- * - 方法不是 POST -> 405
+ * - 方法不对 -> 405
  * - title/text 去空白后全空 -> 400 {"ok":false,"error":"empty content"}
- * - 通过 -> 200 {"ok":true}，同时把内容交给上层展示
+ * - 通过 -> 200
  *
  * token 通过 [tokenProvider] 每次请求实时读取，所以「重置 Token」后立刻生效，
  * 无需重启服务、也不会出现缓存与 SharedPreferences 不一致。
+ *
+ * 本轮不做消息队列：新通知仍然直接替换旧通知。
  */
 class NotifyHttpServer(
-    port: Int,
+    private val advertisedPort: Int,
+    private val versionName: String,
     private val tokenProvider: () -> String,
-    private val onNotify: (String, String, Int) -> Unit
-) : NanoHTTPD(port) {
+    private val uptimeSecondsProvider: () -> Long,
+    private val bannerVisibleProvider: () -> Boolean,
+    private val onNotify: (BannerRequest) -> Unit,
+    private val onDismiss: () -> Boolean
+) : NanoHTTPD(advertisedPort) {
 
     companion object {
         private const val TAG = "TVNotifyHttp"
 
         private const val JSON_MIME = "application/json; charset=utf-8"
         private const val ROUTE_NOTIFY = "notify"
+        private const val ROUTE_DISMISS = "dismiss"
+        private const val ROUTE_HEALTH = "health"
 
         private const val DEFAULT_DURATION_SEC = 5
         private const val MIN_DURATION_SEC = 1
@@ -42,17 +54,38 @@ class NotifyHttpServer(
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         val segments = splitPath(session.uri)
 
-        // 先做路径 + token 校验：非法访问一律 404，不泄露任何信息
-        val token = tokenProvider()
-        if (segments.size != 2 || segments[1] != ROUTE_NOTIFY || !segments[0].equals(token, ignoreCase = false)) {
-            return jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, "{\"ok\":false,\"error\":\"not found\"}")
+        // /health 是单段路径且不带 token，必须先于「两段式 token 校验」处理：
+        // 它与 /{token}/notify 的段数不同（1 段 vs 2 段），天然不会冲突。
+        if (segments.size == 1 && segments[0] == ROUTE_HEALTH) {
+            if (session.method != NanoHTTPD.Method.GET) {
+                return jsonResponse(
+                    NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED,
+                    METHOD_NOT_ALLOWED_BODY
+                )
+            }
+            return jsonResponse(NanoHTTPD.Response.Status.OK, buildHealthBody())
         }
 
+        // 其余路由都是 /{token}/{action} 两段式；token 不匹配一律 404，不泄露任何信息
+        val token = tokenProvider()
+        if (segments.size != 2 || !segments[0].equals(token, ignoreCase = false)) {
+            return jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
+        }
+
+        return when (segments[1]) {
+            ROUTE_NOTIFY -> handleNotify(session)
+            ROUTE_DISMISS -> handleDismiss(session)
+            else -> jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // POST /{token}/notify
+    // ------------------------------------------------------------------
+
+    private fun handleNotify(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         if (session.method != NanoHTTPD.Method.POST) {
-            return jsonResponse(
-                NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED,
-                "{\"ok\":false,\"error\":\"method not allowed\"}"
-            )
+            return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
         }
 
         val body = readRequestBody(session)
@@ -64,7 +97,10 @@ class NotifyHttpServer(
             JSONObject(body)
         } catch (e: Exception) {
             Log.w(TAG, "请求体不是合法 JSON", e)
-            return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, "{\"ok\":false,\"error\":\"invalid json\"}")
+            return jsonResponse(
+                NanoHTTPD.Response.Status.BAD_REQUEST,
+                "{\"ok\":false,\"error\":\"invalid json\"}"
+            )
         }
 
         val title = payload.optString("title", "").trim()
@@ -80,9 +116,75 @@ class NotifyHttpServer(
         }
         val duration = rawDuration.coerceIn(MIN_DURATION_SEC, MAX_DURATION_SEC)
 
-        onNotify(title, text, duration)
+        // level 未知值按 info 处理而不是 400：推送方模板里多写个 "notice" 不该让整条通知发不出去
+        val level = BannerLevel.fromRaw(payload.optString("level", ""))
+        // sticky / sound 缺省值分别 false / true，optBoolean 内部已处理 JSON null
+        val sticky = payload.optBoolean("sticky", false)
+        val sound = payload.optBoolean("sound", true)
+        val rawMaxDuration = if (payload.isNull("maxDuration")) {
+            BannerRequest.DEFAULT_MAX_DURATION_SEC
+        } else {
+            payload.optInt("maxDuration", BannerRequest.DEFAULT_MAX_DURATION_SEC)
+        }
+
+        onNotify(
+            BannerRequest(
+                title = title,
+                text = text,
+                durationSeconds = duration,
+                level = level,
+                sticky = sticky,
+                maxDurationSeconds = rawMaxDuration,
+                sound = sound
+            )
+        )
         return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
     }
+
+    // ------------------------------------------------------------------
+    // POST /{token}/dismiss
+    // ------------------------------------------------------------------
+
+    /**
+     * 关闭当前横幅。
+     *
+     * 幂等是硬要求：HA 自动化可能重复触发、或横幅已按 maxDuration 自动消失后再来一次，
+     * 这些情况都必须返回 200 + dismissed=false，绝不能 404/500，否则调用方会误判为故障。
+     */
+    private fun handleDismiss(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (session.method != NanoHTTPD.Method.POST) {
+            return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
+        }
+        // 本接口不读参数，但必须把请求体从 socket 里读掉：
+        // 否则 keep-alive 连接上的下一个请求会从错的字节位置开始解析。
+        readRequestBody(session)
+        val dismissed = try {
+            onDismiss()
+        } catch (e: Exception) {
+            Log.w(TAG, "关闭横幅失败", e)
+            false
+        }
+        return jsonResponse(
+            NanoHTTPD.Response.Status.OK,
+            "{\"ok\":true,\"dismissed\":$dismissed}"
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // GET /health
+    // ------------------------------------------------------------------
+
+    private fun buildHealthBody(): String {
+        val uptime = uptimeSecondsProvider().coerceAtLeast(0L)
+        val banner = if (bannerVisibleProvider()) "showing" else "idle"
+        // versionName 来自代码常量（只含数字与点），无需 JSON 转义
+        return "{\"ok\":true,\"version\":\"$versionName\",\"uptime\":$uptime," +
+                "\"port\":$advertisedPort,\"banner\":\"$banner\"}"
+    }
+
+    // ------------------------------------------------------------------
+    // 请求体读取（已通过 v1.0.0 审计，本轮未改动）
+    // ------------------------------------------------------------------
 
     private fun splitPath(uri: String?): List<String> {
         if (uri.isNullOrEmpty()) {
@@ -213,3 +315,5 @@ class NotifyHttpServer(
 }
 
 private const val EMPTY_CONTENT_BODY = "{\"ok\":false,\"error\":\"empty content\"}"
+private const val NOT_FOUND_BODY = "{\"ok\":false,\"error\":\"not found\"}"
+private const val METHOD_NOT_ALLOWED_BODY = "{\"ok\":false,\"error\":\"method not allowed\"}"
