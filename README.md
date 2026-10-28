@@ -82,17 +82,7 @@ adb shell appops set com.zqc.tvnotify SYSTEM_ALERT_WINDOW allow
 adb shell am startservice -n com.zqc.tvnotify/.NotifyService
 ```
 
-### 5. 允许自启动、关闭省电限制（小米电视必做）
-
-小米系的 ROM 会在息屏或待机一段时间后杀掉后台服务，必须手动放行：
-
-- `设置 → 账号与安全 → 开发者选项`：打开「USB 调试」「USB 安装」
-- `设置 → 应用 → 应用管理 → TVNotify → 自启动`：允许
-- `设置 → 应用 → 应用管理 → TVNotify → 省电策略`：改为 **无限制**
-- `设置 → 应用 → 应用管理 → TVNotify → 权限`：允许「显示在其他应用上层」
-- 部分 MIUI TV 版本还有 `设置 → 安全 → 后台任务管理`，把 TVNotify 加入白名单
-
-### 6. 拿到调用地址
+### 5. 拿到调用地址
 
 打开 TVNotify，界面上会显示：
 
@@ -103,7 +93,7 @@ Token：k7m2p9x4
 
 旁边的二维码扫一下即可导入到手机 / HA。
 
-### 7. 发一条试试
+### 6. 发一条试试
 
 ```bash
 curl -X POST http://192.168.1.23:8791/k7m2p9x4/notify \
@@ -455,7 +445,7 @@ Release 打开了 `isMinifyEnabled` + `isShrinkResources`。`proguard-rules.pro`
 
 Android 6.0 电视 + 小米省电策略是主因，前台服务只是提升优先级，不保证不被杀。处理方式：
 
-1. 按「快速开始 → 第 5 步」关闭省电限制、允许自启动；
+1. 在电视上给 TVNotify 放行自启动、并把省电策略改为「无限制」；
 2. 在 Home Assistant 自动化里保留 `am startservice` 那一步（本项目的服务是幂等的，重复拉起无副作用）；
 3. 需要更硬的保活可以接一个定时 ping 的自动化（每 30 分钟发一条空通知会打扰用户，建议只在需要时拉起）。
 
