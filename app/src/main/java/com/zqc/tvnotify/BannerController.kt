@@ -154,6 +154,7 @@ class BannerController(private val context: Context) {
     private var bannerParams: WindowManager.LayoutParams? = null
     private var currentAnimator: Animator? = null
     private var mediaPlayer: MediaPlayer? = null
+    private var mediaPlayerResId: Int = 0
     private var activeMediaSession: MediaSession? = null
 
     fun isShowing(): Boolean = bannerView != null
@@ -314,11 +315,17 @@ class BannerController(private val context: Context) {
         }
     }
 
+    private fun soundResId(): Int =
+        if (Theme.current(context) == Theme.XIUXIAN) R.raw.chord_xiuxian else R.raw.chord
+
     @Suppress("DEPRECATION")
     private fun ensureMediaPlayer(): MediaPlayer? {
+        // 主题切换后必须换音效：缓存实例与创建时的主题资源绑定，不一致就重建
+        val resId = soundResId()
+        if (mediaPlayer != null && mediaPlayerResId != resId) {
+            releaseMediaPlayer()
+        }
         mediaPlayer?.let { return it }
-        // 修仙主题用专属音效「传音玉简」，默认主题维持原 tvOS 和弦
-        val resId = if (Theme.current(context) == Theme.XIUXIAN) R.raw.chord_xiuxian else R.raw.chord
         val created = try {
             MediaPlayer.create(context, resId)
         } catch (e: Exception) {
@@ -339,12 +346,14 @@ class BannerController(private val context: Context) {
             true
         }
         mediaPlayer = created
+        mediaPlayerResId = resId
         return created
     }
 
     private fun releaseMediaPlayer() {
         val player = mediaPlayer ?: return
         mediaPlayer = null
+        mediaPlayerResId = 0
         try {
             if (player.isPlaying) {
                 player.pause()
