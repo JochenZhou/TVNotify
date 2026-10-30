@@ -116,17 +116,11 @@ class NotifyHttpServer(
         val imageUrl = payload.optString("image", payload.optString("imageUrl", "")).trim()
         val imageBase64 = payload.optString("image_base64", payload.optString("imageBase64", "")).trim()
         val videoUrl = payload.optString("video", payload.optString("videoUrl", "")).trim()
-        // mp4：video_file / videoFile / mp4 三个别名都收，方便 HA 模板书写
-        val videoFile = payload.optString(
-            "video_file",
-            payload.optString("videoFile", payload.optString("mp4", ""))
-        ).trim()
-        val videoSound = payload.optBoolean("video_sound", payload.optBoolean("videoSound", false))
 
-        // 文字与媒体全空才拒绝：只推一张图/一段视频（无文案）也是合法用法
+        // 文字与媒体全空才拒绝：只推一张图/一段流（无文案）也是合法用法
         val hasAnyContent = title.isNotEmpty() || text.isNotEmpty() ||
                 imageUrl.isNotEmpty() || imageBase64.isNotEmpty() ||
-                videoUrl.isNotEmpty() || videoFile.isNotEmpty()
+                videoUrl.isNotEmpty()
         if (!hasAnyContent) {
             return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, EMPTY_CONTENT_BODY)
         }
@@ -160,9 +154,7 @@ class NotifyHttpServer(
                 sound = sound,
                 imageUrl = if (imageUrl.isNotEmpty()) imageUrl else null,
                 imageBase64 = if (imageBase64.isNotEmpty()) imageBase64 else null,
-                videoUrl = if (videoUrl.isNotEmpty()) videoUrl else null,
-                videoFile = if (videoFile.isNotEmpty()) videoFile else null,
-                videoSound = videoSound
+                videoUrl = if (videoUrl.isNotEmpty()) videoUrl else null
             )
         )
         return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
