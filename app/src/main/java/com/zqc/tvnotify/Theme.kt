@@ -3,7 +3,7 @@ package com.zqc.tvnotify
 import android.graphics.Color
 
 /**
- * 主题定义：默认（现代深色）与修仙（古风传音玉简）两套。
+ * 主题定义：修仙（古风传音玉简，默认首选）与默认（现代深色 tvOS）两套。
  *
  * 设计要点：
  * 1. 所有用户可见文案集中在这里，MainActivity / NotifyService / BannerController
@@ -11,18 +11,18 @@ import android.graphics.Color
  * 2. Token / URL / IPv4 / adb 命令等技术内容不属于文案，保持原样不参与主题化；
  * 3. 主题只影响「显示」，不影响任何接口行为：HTTP 路由、JSON 字段、mDNS 广播
  *    与主题无关，切换主题不需要重启服务；
- * 4. 横幅配色：默认主题维持 tvOS 深色半透明卡片；修仙主题改为「玉简投影」——
- *    青玉底色 + 描边随 level 变化（info 玉青 / warn 琥珀 / error 朱砂）。
+ * 4. 横幅配色：默认主题维持 tvOS 深色半透明卡片；修仙主题为「传音玉简」——
+ *    青羊脂灵玉渐变底色 + 灵力光纹双层描边 + 灵波共鸣符标。
  */
 enum class Theme(val storageId: String) {
-    DEFAULT("default"),
-    XIUXIAN("xiuxian");
+    XIUXIAN("xiuxian"),
+    DEFAULT("default");
 
     companion object {
-        /** 从 Prefs 读取主题；无记录或值非法时回落默认主题。 */
+        /** 从 Prefs 读取主题；首发无记录或值非法时默认优先采用「修仙玉简」主题。 */
         fun current(context: android.content.Context): Theme {
-            val saved = Prefs.getThemeId(context) ?: return DEFAULT
-            return entries.firstOrNull { it.storageId == saved } ?: DEFAULT
+            val saved = Prefs.getThemeId(context) ?: return XIUXIAN
+            return entries.firstOrNull { it.storageId == saved } ?: XIUXIAN
         }
 
         fun save(context: android.content.Context, theme: Theme) {
@@ -39,12 +39,18 @@ enum class Theme(val storageId: String) {
         if (isXianxia) "灵讯横幅 · 常驻阵眼，一简传音" else "局域网通知横幅 · 电视端常驻服务"
 
     val callInfoTitle: String get() = if (isXianxia) "传音玉简 · 符钥" else "本机调用信息"
+    val qrTitle: String get() = if (isXianxia) "灵石符印 · 扫码即连" else "扫码获取调用地址"
+    val qrSubtitle: String get() = if (isXianxia) "以手机或 Home Assistant 扫码，直接录入传音法诀" else "使用手机或外部系统扫码，导入通知配置"
 
-    fun statusLine(running: Boolean): String =
+    fun statusLine(running: Boolean, errorMsg: String? = null): String =
         if (isXianxia) {
-            if (running) "阵法：已开启" else "阵法：灵光未聚（已尝试启动，请检查自启动权限）"
+            if (running) "阵法：已开启"
+            else if (!errorMsg.isNullOrBlank()) "阵法：灵光未聚（$errorMsg）"
+            else "阵法：灵光未聚（已尝试启动，请检查自启动权限）"
         } else {
-            if (running) "服务状态：运行中" else "服务状态：未运行（已尝试启动，请检查自启动权限）"
+            if (running) "服务状态：运行中"
+            else if (!errorMsg.isNullOrBlank()) "服务状态：启动失败（$errorMsg）"
+            else "服务状态：未运行（已尝试启动，请检查自启动权限）"
         }
 
     fun portLine(port: Int, running: Boolean): String =
@@ -104,7 +110,7 @@ enum class Theme(val storageId: String) {
         }
 
     // ------------------------------------------------------------------
-    // 前台服务通知（常驻栏）。端口取 NotifyService.PORT（import 别名，见文件头）
+    // 前台服务通知（常驻栏）
     // ------------------------------------------------------------------
 
     val foregroundTitle: String get() = if (isXianxia) "玉简 · 传音阵运转中" else "玉简 运行中"
@@ -114,20 +120,46 @@ enum class Theme(val storageId: String) {
     val foregroundChannelName: String get() = if (isXianxia) "玉简 · 常驻阵法" else "玉简 常驻服务"
 
     // ------------------------------------------------------------------
-    // 横幅配色（玉简投影 vs tvOS 深色卡片）
+    // 主题配色系统
     // ------------------------------------------------------------------
 
-    private val isXianxia: Boolean get() = this == XIUXIAN
+    val isXianxia: Boolean get() = this == XIUXIAN
 
-    val bannerBackground: Int
-        get() = if (isXianxia) Color.argb(0xE6, 0x14, 0x2B, 0x30) else Color.argb(0xD9, 0x1C, 0x1C, 0x1E)
+    // 设置页面配色
+    val windowBg: Int get() = if (isXianxia) Color.parseColor("#FF0A1315") else Color.parseColor("#FF101114")
+    val cardBg: Int get() = if (isXianxia) Color.parseColor("#FF102024") else Color.parseColor("#FF1A1C20")
+    val cardStroke: Int get() = if (isXianxia) Color.parseColor("#FF1B383F") else Color.parseColor("#FF2A2D33")
+    val hintColor: Int get() = if (isXianxia) Color.parseColor("#FF8AA8A4") else Color.parseColor("#FF9A9AA2")
+    val accentColor: Int get() = if (isXianxia) Color.parseColor("#FF36D1A8") else Color.parseColor("#FF4C9AFF")
+    val buttonBg: Int get() = if (isXianxia) Color.parseColor("#FF183037") else Color.parseColor("#FF2A2C31")
+    val buttonStroke: Int get() = if (isXianxia) Color.parseColor("#FF244953") else Color.parseColor("#FF3A3D45")
+
+    // 横幅渐变配色（从顶到底）
+    val bannerBackgroundStart: Int
+        get() = if (isXianxia) Color.argb(0xF4, 0x16, 0x36, 0x3C) else Color.argb(0xEB, 0x22, 0x22, 0x26)
+    val bannerBackgroundEnd: Int
+        get() = if (isXianxia) Color.argb(0xF8, 0x0C, 0x1B, 0x1E) else Color.argb(0xF2, 0x14, 0x14, 0x16)
+
     val bannerBodyText: Int
-        get() = if (isXianxia) Color.argb(0xFF, 0xD9, 0xEF, 0xE7) else Color.argb(0xFF, 0xEB, 0xEB, 0xF5)
+        get() = if (isXianxia) Color.argb(0xFF, 0xDC, 0xF3, 0xEB) else Color.argb(0xFF, 0xEB, 0xEB, 0xF5)
     val bannerTitle: Int
-        get() = if (isXianxia) Color.argb(0xFF, 0xF2, 0xFF, 0xF9) else Color.WHITE
+        get() = if (isXianxia) Color.argb(0xFF, 0xF4, 0xFF, 0xFA) else Color.WHITE
 
     /** 玉简主题的标题字体改为衬线（宋体类），模拟简牍刻字；默认主题保持系统粗黑体 */
     val bannerTitleSerif: Boolean get() = isXianxia
+
+    fun levelBadgeText(level: BannerLevel): String = when {
+        !isXianxia -> when (level) {
+            BannerLevel.INFO -> "通知"
+            BannerLevel.WARN -> "警告"
+            BannerLevel.ERROR -> "错误"
+        }
+        else -> when (level) {
+            BannerLevel.INFO -> "传音"
+            BannerLevel.WARN -> "灵警"
+            BannerLevel.ERROR -> "告急"
+        }
+    }
 
     fun bannerIconColor(level: BannerLevel): Int = when {
         !isXianxia -> when (level) {
@@ -136,9 +168,9 @@ enum class Theme(val storageId: String) {
             BannerLevel.ERROR -> Color.rgb(0xFF, 0x45, 0x3A)
         }
         else -> when (level) {
-            BannerLevel.INFO -> Color.rgb(0x7F, 0xDB, 0xC4)      // 玉青
-            BannerLevel.WARN -> Color.rgb(0xFF, 0xB0, 0x20)      // 琥珀
-            BannerLevel.ERROR -> Color.rgb(0xFF, 0x5A, 0x4F)     // 朱砂
+            BannerLevel.INFO -> Color.rgb(0x63, 0xE6, 0xBE)      // 碧落仙玉青
+            BannerLevel.WARN -> Color.rgb(0xFF, 0xC0, 0x43)      // 琥珀灵焰金
+            BannerLevel.ERROR -> Color.rgb(0xFF, 0x5C, 0x5C)     // 朱砂煞气赤
         }
     }
 
@@ -149,9 +181,9 @@ enum class Theme(val storageId: String) {
             BannerLevel.ERROR -> Color.argb(0x66, 0xFF, 0x45, 0x3A)
         }
         else -> when (level) {
-            BannerLevel.INFO -> Color.argb(0x99, 0x7F, 0xDB, 0xC4)
-            BannerLevel.WARN -> Color.argb(0x99, 0xFF, 0xB0, 0x20)
-            BannerLevel.ERROR -> Color.argb(0x99, 0xFF, 0x5A, 0x4F)
+            BannerLevel.INFO -> Color.argb(0xB3, 0x63, 0xE6, 0xBE) // 灵玉微光描边
+            BannerLevel.WARN -> Color.argb(0xCC, 0xFF, 0xC0, 0x43)
+            BannerLevel.ERROR -> Color.argb(0xCC, 0xFF, 0x5C, 0x5C)
         }
     }
 }

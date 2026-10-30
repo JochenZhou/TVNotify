@@ -6,10 +6,13 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Typeface
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
+import android.graphics.RectF
+import android.graphics.Shader
+import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -71,7 +74,7 @@ data class BannerRequest(
 }
 
 /**
- * tvOS 风格横幅控制器：用 WindowManager 悬浮窗自绘。
+ * tvOS 风格与仙侠传音玉简横幅控制器：用 WindowManager 悬浮窗自绘。
  *
  * 为什么不用系统 Notification：电视的 notification shade 被裁掉（遥控器无法下拉），
  * 且 `cmd notification post` 在 API 23 上不存在，唯一可靠的展示方式是悬浮窗。
@@ -88,7 +91,7 @@ class BannerController(private val context: Context) {
     companion object {
         private const val TAG = "TVNotifyBanner"
 
-        private const val ENTER_DURATION_MS = 250L
+        private const val ENTER_DURATION_MS = 280L
         private const val EXIT_DURATION_MS = 200L
         private const val MIN_DURATION_SEC = 1
         private const val MAX_DURATION_SEC = 30
@@ -96,15 +99,14 @@ class BannerController(private val context: Context) {
         private const val MAX_MAX_DURATION_SEC = BannerRequest.MAX_MAX_DURATION_SEC
 
         /** 屏宽占比：正文放到 4 行后需要更宽的可视区域，否则中文长句会被切得过碎 */
-        private const val BANNER_WIDTH_RATIO = 0.64f
+        private const val BANNER_WIDTH_RATIO = 0.65f
         private const val BANNER_TOP_MARGIN_DP = 32f
 
         /**
          * 首帧布局之前的占位位移，仅用于「alpha=0 的不可见阶段」；
-         * 真正的入场起点在 [playEnterAnimation] 里用测量后的实际高度计算，
-         * 卡片高度随正文行数变化后，绝不能把这个常量当成动画起点。
+         * 真正的入场起点在 [playEnterAnimation] 里用测量后的实际高度计算。
          */
-        private const val FALLBACK_HEIGHT_DP = 72f
+        private const val FALLBACK_HEIGHT_DP = 76f
 
         /** sticky 模式下 KEEP_SCREEN_ON 的保留窗口：超时后撤销，避免电视永不熄屏 */
         private const val KEEP_SCREEN_ON_WINDOW_MS = 60_000L
@@ -165,7 +167,6 @@ class BannerController(private val context: Context) {
         bannerParams = params
 
         if (request.sound) {
-            // 入场音与入场动画同一帧开始，250ms 内人耳分辨不出先后
             playSound()
         }
 
@@ -203,9 +204,6 @@ class BannerController(private val context: Context) {
 
     /**
      * 供 `POST /{token}/dismiss` 调用：关闭横幅并回答「调用前是否真的有横幅」。
-     *
-     * 走 latch 而不是直接读字段，是为了让 dismissed 反映真实状态；
-     * 主线程被阻塞时最多等 [DISMISS_WAIT_MS]，超时按 false 返回（幂等接口，误报 false 无害）。
      */
     fun dismissWithResult(): Boolean {
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -252,12 +250,9 @@ class BannerController(private val context: Context) {
         mainHandler.removeCallbacks(hideRunnable)
         mainHandler.removeCallbacks(clearKeepScreenOnRunnable)
         if (request.sticky) {
-            // sticky 不看 duration，但必须有 maxDuration 兜底：推送方崩溃后没人调 /dismiss，
-            // 横幅会永久挡住屏幕（窗口不可触摸），用户只能重启电视。
             val maxSeconds = request.maxDurationSeconds
                 .coerceIn(MIN_MAX_DURATION_SEC, MAX_MAX_DURATION_SEC)
             mainHandler.postDelayed(hideRunnable, maxSeconds * 1000L)
-            // 电视需要正常熄屏：只在前 60 秒顶住熄屏，之后撤掉 KEEP_SCREEN_ON
             mainHandler.postDelayed(clearKeepScreenOnRunnable, KEEP_SCREEN_ON_WINDOW_MS)
         } else {
             val seconds = request.durationSeconds.coerceIn(MIN_DURATION_SEC, MAX_DURATION_SEC)
@@ -284,14 +279,12 @@ class BannerController(private val context: Context) {
     private fun playSound() {
         val player = ensureMediaPlayer() ?: return
         try {
-            // 复用同一个实例：先归零再播，抢占替换时不会叠出两路声音
             if (player.isPlaying) {
                 player.pause()
             }
             player.seekTo(0)
             player.start()
         } catch (e: Exception) {
-            // 音频设备被前台 App 独占时 start() 会抛 IllegalStateException，绝不能崩
             Log.w(TAG, "提示音播放失败", e)
         }
     }
@@ -300,7 +293,6 @@ class BannerController(private val context: Context) {
     private fun ensureMediaPlayer(): MediaPlayer? {
         mediaPlayer?.let { return it }
         val created = try {
-            // create() 内部已 prepare，只需一次创建后长期复用，避免重复 new 泄漏
             MediaPlayer.create(context, R.raw.chord)
         } catch (e: Exception) {
             Log.w(TAG, "创建 MediaPlayer 失败", e)
@@ -311,7 +303,6 @@ class BannerController(private val context: Context) {
             return null
         }
         try {
-            // 电视上 STREAM_NOTIFICATION 常被静音，改走 STREAM_MUSIC 才能真的响
             created.setAudioStreamType(AudioManager.STREAM_MUSIC)
         } catch (e: Exception) {
             Log.w(TAG, "设置音频流类型失败，沿用默认流", e)
@@ -342,17 +333,17 @@ class BannerController(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
-    // 动画
+    // 动画：滑入 + 淡入 + 灵气浮现微缩放
     // ------------------------------------------------------------------
 
     private fun playEnterAnimation(view: View) {
-        // 用测量后的实际高度：正文 4 行时卡片比 72dp 高得多，写死常量会导致
-        // 「飞入距离不够」或从屏幕内突然出现。
         val height = if (view.height > 0) view.height else dp(FALLBACK_HEIGHT_DP)
         val startY = -(height + dp(BANNER_TOP_MARGIN_DP)).toFloat()
         view.translationY = startY
         view.alpha = 0f
-        animate(view, startY, 0f, 0f, 1f, ENTER_DURATION_MS, null)
+        view.scaleX = 0.94f
+        view.scaleY = 0.94f
+        animate(view, startY, 0f, 0f, 1f, 0.94f, 1.0f, ENTER_DURATION_MS, null)
     }
 
     private fun dismissAnimated() {
@@ -361,7 +352,7 @@ class BannerController(private val context: Context) {
         val view = bannerView ?: return
         val height = if (view.height > 0) view.height else dp(FALLBACK_HEIGHT_DP)
         val endY = -(height + dp(BANNER_TOP_MARGIN_DP)).toFloat()
-        animate(view, view.translationY, endY, view.alpha, 0f, EXIT_DURATION_MS) {
+        animate(view, view.translationY, endY, view.alpha, 0f, view.scaleX, 0.95f, EXIT_DURATION_MS) {
             removeViewSafely(view)
             if (bannerView === view) {
                 bannerView = null
@@ -371,8 +362,7 @@ class BannerController(private val context: Context) {
     }
 
     /**
-     * 单属性驱动（0..1 进度）同时插值 translationY 与 alpha，
-     * 避免 AnimatorSet 与 ObjectAnimator 混用时取消不干净。
+     * 单属性驱动同时插值 translationY、alpha 与 scale，保证动画取消干净且流畅。
      */
     private fun animate(
         view: View,
@@ -380,17 +370,22 @@ class BannerController(private val context: Context) {
         toY: Float,
         fromAlpha: Float,
         toAlpha: Float,
+        fromScale: Float,
+        toScale: Float,
         durationMs: Long,
         onEnd: (() -> Unit)?
     ) {
         cancelAnimation()
         val animator = ValueAnimator.ofFloat(0f, 1f)
         animator.duration = durationMs
-        animator.interpolator = DecelerateInterpolator()
+        animator.interpolator = DecelerateInterpolator(1.4f)
         animator.addUpdateListener { animation ->
             val fraction = animation.animatedFraction
             view.translationY = fromY + (toY - fromY) * fraction
             view.alpha = fromAlpha + (toAlpha - fromAlpha) * fraction
+            val scale = fromScale + (toScale - fromScale) * fraction
+            view.scaleX = scale
+            view.scaleY = scale
         }
         animator.addListener(object : AnimatorListenerAdapter() {
             private var cancelled = false
@@ -403,7 +398,6 @@ class BannerController(private val context: Context) {
                 if (currentAnimator === animation) {
                     currentAnimator = null
                 }
-                // 被抢占取消时不能执行收尾回调，否则会误删新横幅
                 if (!cancelled) {
                     onEnd?.invoke()
                 }
@@ -422,7 +416,7 @@ class BannerController(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
-    // 视图构建
+    // 视图构建：玉简仙侠灵讯横幅 vs tvOS 现代深色卡片
     // ------------------------------------------------------------------
 
     private fun buildBannerView(request: BannerRequest): View {
@@ -430,25 +424,23 @@ class BannerController(private val context: Context) {
         val trimmedText = request.text.trim()
         val theme = Theme.current(context)
 
-        // 玉简主题下横幅本体是一块「竖置玉简」：外层容器留出简牍上下留白，
-        // 内层才是内容；默认主题维持原横条卡片。
         val container = LinearLayout(context)
         container.orientation = LinearLayout.HORIZONTAL
         container.gravity = Gravity.CENTER_VERTICAL
         if (theme == Theme.XIUXIAN) {
-            container.setPadding(dp(22f), dp(18f), dp(22f), dp(20f))
+            container.setPadding(dp(24f), dp(18f), dp(24f), dp(19f))
         } else {
-            container.setPadding(dp(18f), dp(14f), dp(18f), dp(14f))
+            container.setPadding(dp(20f), dp(14f), dp(20f), dp(15f))
         }
         container.background = buildBannerBackground(theme, request.level)
 
-        val iconSize = dp(if (theme == Theme.XIUXIAN) 30f else 26f)
+        // 左侧图标：修仙玉简主题用带共鸣声波的 JadeSlipIconView；默认主题用 BellIconView
+        val iconSize = dp(if (theme == Theme.XIUXIAN) 38f else 28f)
         val iconParams = LinearLayout.LayoutParams(iconSize, iconSize)
         iconParams.gravity = Gravity.CENTER_VERTICAL
-        iconParams.setMargins(0, 0, dp(14f), 0)
+        iconParams.setMargins(0, 0, dp(16f), 0)
         if (theme == Theme.XIUXIAN) {
-            // 玉简投影用卷轴/传音符样式图标，默认主题维持铃铛
-            container.addView(ScrollIconView(context, theme.bannerIconColor(request.level)), iconParams)
+            container.addView(JadeSlipIconView(context, theme.bannerIconColor(request.level)), iconParams)
         } else {
             container.addView(BellIconView(context, theme.bannerIconColor(request.level)), iconParams)
         }
@@ -456,51 +448,83 @@ class BannerController(private val context: Context) {
         val column = LinearLayout(context)
         column.orientation = LinearLayout.VERTICAL
 
-        if (trimmedTitle.isNotEmpty()) {
-            column.addView(buildTitleView(trimmedTitle, theme))
+        // 标题行：包含分级角标（[传音] / [灵警] / [告急]）+ 主标题
+        val headerRow = LinearLayout(context)
+        headerRow.orientation = LinearLayout.HORIZONTAL
+        headerRow.gravity = Gravity.CENTER_VERTICAL
+
+        val badgeColor = theme.bannerIconColor(request.level)
+        val badgeView = TextView(context).apply {
+            text = theme.levelBadgeText(request.level)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(badgeColor)
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(dp(7f), dp(1f), dp(7f), dp(1f))
+            includeFontPadding = false
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(6f).toFloat()
+                setColor(Color.argb(0x2A, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
+                setStroke(dp(1f), Color.argb(0x66, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
+            }
         }
+        val badgeParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply {
+            setMargins(0, 0, dp(8f), 0)
+        }
+        headerRow.addView(badgeView, badgeParams)
+
+        val finalTitle = if (trimmedTitle.isNotEmpty()) trimmedTitle else if (theme == Theme.XIUXIAN) "传音灵讯" else "系统通知"
+        val titleView = buildTitleView(finalTitle, theme, request.level)
+        val titleParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        headerRow.addView(titleView, titleParams)
+        column.addView(headerRow)
+
         if (trimmedText.isNotEmpty()) {
             column.addView(buildBodyView(trimmedText, theme))
-        }
-        if (column.childCount == 0) {
-            // 理论上 HTTP 层已拒绝空内容，这里只兜底「测试入口只传了空格」的情况
+        } else if (trimmedTitle.isEmpty()) {
             column.addView(buildBodyView("（空通知）", theme))
         }
 
-        val columnParams = LinearLayout.LayoutParams(
-            0,
-            LinearLayout.LayoutParams.WRAP_CONTENT,
-            1f
-        )
+        val columnParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         container.addView(column, columnParams)
         return container
     }
 
     /**
-     * 横幅底色：默认主题 = tvOS 深色半透明圆角卡；
-     * 修仙主题 = 玉简投影——深青玉底 + 玉青描边 + 更大圆角（简牍感）。
+     * 横幅底色：渐变背景 + 灵光描边 + 大圆角。
      */
     private fun buildBannerBackground(theme: Theme, level: BannerLevel): GradientDrawable {
-        val drawable = GradientDrawable()
+        val drawable = GradientDrawable(
+            GradientDrawable.Orientation.TOP_BOTTOM,
+            intArrayOf(theme.bannerBackgroundStart, theme.bannerBackgroundEnd)
+        )
         drawable.shape = GradientDrawable.RECTANGLE
-        drawable.cornerRadius = dp(if (theme == Theme.XIUXIAN) 20f else 16f).toFloat()
-        drawable.setColor(theme.bannerBackground)
-        drawable.setStroke(dp(if (theme == Theme.XIUXIAN) 2f else 1f), theme.bannerStrokeColor(level))
+        drawable.cornerRadius = dp(if (theme == Theme.XIUXIAN) 22f else 16f).toFloat()
+        drawable.setStroke(dp(if (theme == Theme.XIUXIAN) 2f else 1.5f), theme.bannerStrokeColor(level))
         return drawable
     }
 
-    private fun buildTitleView(title: String, theme: Theme): TextView {
+    private fun buildTitleView(title: String, theme: Theme, level: BannerLevel): TextView {
         val view = TextView(context)
         view.text = title
         view.setTextColor(theme.bannerTitle)
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
         view.typeface = if (theme.bannerTitleSerif) {
-            // 衬线（宋体类）模拟简牍刻字；SERIF 在 Android 6 上必然存在（Noto Serif CJK 随系统附带）
             Typeface.SERIF
         } else {
             Typeface.DEFAULT_BOLD
         }
-        // 标题保持单行：标题一换行，正文的可读高度就被挤压
+        if (theme == Theme.XIUXIAN) {
+            // 仙玉灵光文字晕染阴影
+            val glowColor = theme.bannerIconColor(level)
+            view.setShadowLayer(
+                8f, 0f, 1f,
+                Color.argb(0x80, Color.red(glowColor), Color.green(glowColor), Color.blue(glowColor))
+            )
+        }
         view.isSingleLine = true
         view.ellipsize = TextUtils.TruncateAt.END
         view.includeFontPadding = false
@@ -515,12 +539,11 @@ class BannerController(private val context: Context) {
             view.typeface = Typeface.SERIF
         }
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-        // 4 行：天气预警这类长句 2 行根本放不下（用户实测被截断），
-        // 卡片高度由 WRAP_CONTENT 自适应，不写死高度
         view.maxLines = 4
         view.ellipsize = TextUtils.TruncateAt.END
         view.includeFontPadding = false
-        view.setPadding(0, dp(3f), 0, 0)
+        view.setLineSpacing(dp(3f).toFloat(), 1f)
+        view.setPadding(0, dp(5f), 0, 0)
         return view
     }
 
@@ -531,12 +554,9 @@ class BannerController(private val context: Context) {
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         } else {
-            // API 23~25 没有 OVERLAY 类型，只能先用 TYPE_PHONE
             WindowManager.LayoutParams.TYPE_PHONE
         }
 
-        // 绝不抢焦点：NOT_FOCUSABLE + NOT_TOUCHABLE，遥控器操作仍然作用于下面正在播放的 App
-        // LAYOUT_NO_LIMITS 允许动画期间把窗口画到屏幕外（滑出效果）
         val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
@@ -555,7 +575,7 @@ class BannerController(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
-    // WindowManager 读写（所有调用都在主线程）
+    // WindowManager 读写
     // ------------------------------------------------------------------
 
     private fun addViewSafely(view: View, params: WindowManager.LayoutParams): Boolean {
@@ -586,7 +606,6 @@ class BannerController(private val context: Context) {
         try {
             windowManager.removeView(view)
         } catch (e: Exception) {
-            // 已 detached 时 removeView 会抛 IllegalArgumentException，属正常路径
             Log.w(TAG, "removeView 失败（可能已移除）", e)
         }
     }
@@ -609,10 +628,104 @@ class BannerController(private val context: Context) {
         context.resources.displayMetrics
     ).toInt()
 
+    // ------------------------------------------------------------------
+    // 自绘图标组件
+    // ------------------------------------------------------------------
+
     /**
-     * 手绘铃铛图标：电视端不需要额外 drawable，Canvas 绘制可以随尺寸无损缩放。
-     *
-     * 颜色由 level 决定（白色 / 琥珀 / 红），focused 态无关，因此构造时一次性传入。
+     * 传音玉简法宝图标：
+     * 1. 核心为温润剔透的竖置长方形仙玉简（羊脂玉/青白碧玉渐变与圆角）；
+     * 2. 玉简顶端有穿绳玉孔与云纹如意扣；
+     * 3. 左右两侧辐射出向外发散的「灵力共鸣声波环」，精准表达「千里传音」意境；
+     * 4. 颜色与微光随通知级别（碧青/灵金/朱砂赤）流动变色。
+     */
+    private class JadeSlipIconView(context: Context, private val levelColor: Int) : View(context) {
+
+        private val jadePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2f
+            color = Color.argb(0x99, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+        }
+        private val wavePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
+        private val notchPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = Color.argb(0xDD, 0x0A, 0x18, 0x1B)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) return
+
+            val cx = w * 0.5f
+            val cy = h * 0.5f
+
+            // 1. 左右灵波（声波共鸣弧线）
+            val r1 = w * 0.36f
+            val r2 = w * 0.46f
+            val sweepAngle = 56f
+
+            // 内层灵力声波
+            wavePaint.strokeWidth = w * 0.045f
+            wavePaint.color = Color.argb(0xB3, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), 180f - sweepAngle / 2, sweepAngle, false, wavePaint)
+            canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), -sweepAngle / 2, sweepAngle, false, wavePaint)
+
+            // 外层灵力声波
+            wavePaint.strokeWidth = w * 0.035f
+            wavePaint.color = Color.argb(0x55, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
+            canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), 180f - sweepAngle / 2, sweepAngle, false, wavePaint)
+            canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), -sweepAngle / 2, sweepAngle, false, wavePaint)
+
+            // 2. 玉简本体 (长宽比约 1:2.4)
+            val jadeW = w * 0.30f
+            val jadeH = h * 0.74f
+            val left = cx - jadeW / 2
+            val top = cy - jadeH / 2
+            val right = cx + jadeW / 2
+            val bottom = cy + jadeH / 2
+            val radius = jadeW * 0.22f
+
+            // 羊脂玉与灵碧微光渐变
+            val shader = LinearGradient(
+                left, top, right, bottom,
+                intArrayOf(
+                    Color.argb(0xFF, 0xF2, 0xFF, 0xFA),
+                    levelColor,
+                    Color.argb(0xFF, 0x14, 0x3E, 0x42)
+                ),
+                floatArrayOf(0.0f, 0.45f, 1.0f),
+                Shader.TileMode.CLAMP
+            )
+            jadePaint.shader = shader
+            val jadeRect = RectF(left, top, right, bottom)
+            canvas.drawRoundRect(jadeRect, radius, radius, jadePaint)
+            canvas.drawRoundRect(jadeRect, radius, radius, borderPaint)
+
+            // 3. 玉简顶端系绳玉孔
+            canvas.drawCircle(cx, top + jadeW * 0.36f, jadeW * 0.12f, notchPaint)
+
+            // 4. 玉简表面云符雕痕（微光阴刻线）
+            val runePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(0x70, 0xFF, 0xFF, 0xFF)
+                strokeWidth = w * 0.024f
+            }
+            val lineY1 = cy + jadeH * 0.06f
+            val lineY2 = cy + jadeH * 0.22f
+            canvas.drawLine(cx - jadeW * 0.24f, lineY1, cx + jadeW * 0.24f, lineY1, runePaint)
+            canvas.drawLine(cx - jadeW * 0.18f, lineY2, cx + jadeW * 0.18f, lineY2, runePaint)
+        }
+    }
+
+    /**
+     * 手绘铃铛图标（默认主题保留）
      */
     private class BellIconView(context: Context, color: Int) : View(context) {
 
@@ -627,11 +740,8 @@ class BannerController(private val context: Context) {
             super.onDraw(canvas)
             val w = width.toFloat()
             val h = height.toFloat()
-            if (w <= 0f || h <= 0f) {
-                return
-            }
+            if (w <= 0f || h <= 0f) return
 
-            // 钟体：顶部圆顶 + 两侧外扩
             path.reset()
             path.moveTo(w * 0.50f, h * 0.08f)
             path.cubicTo(w * 0.28f, h * 0.08f, w * 0.22f, h * 0.38f, w * 0.22f, h * 0.52f)
@@ -642,49 +752,8 @@ class BannerController(private val context: Context) {
             path.close()
             canvas.drawPath(path, paint)
 
-            // 底沿
             canvas.drawRect(w * 0.08f, h * 0.74f, w * 0.92f, h * 0.82f, paint)
-
-            // 铃锤
             canvas.drawCircle(w * 0.50f, h * 0.90f, w * 0.09f, paint)
-        }
-    }
-
-    /**
-     * 玉简主题专用图标：一卷展开的简牍（卷轴）。
-     *
-     * 中轴是简片，上下两端是卷轴轴头；线条风格与铃铛一致（纯填充、随 level 着色）。
-     */
-    private class ScrollIconView(context: Context, color: Int) : View(context) {
-
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            style = Paint.Style.FILL
-        }
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val w = width.toFloat()
-            val h = height.toFloat()
-            if (w <= 0f || h <= 0f) {
-                return
-            }
-
-            // 简片主体（中间矩形，略窄留出轴头）
-            canvas.drawRect(w * 0.18f, h * 0.16f, w * 0.82f, h * 0.84f, paint)
-
-            // 上下卷轴轴头（横向长条）
-            canvas.drawRoundRect(
-                w * 0.08f, h * 0.06f, w * 0.92f, h * 0.20f,
-                w * 0.06f, h * 0.06f, paint
-            )
-            canvas.drawRoundRect(
-                w * 0.08f, h * 0.80f, w * 0.92f, h * 0.94f,
-                w * 0.06f, h * 0.06f, paint
-            )
-
-            // 简片上的两道「刻痕」（镂空线，用透明挖不出来，改用背景近似：细长矩形画在简片中央）
-            // 悬浮窗没有固定背景色可借，镂空改为不绘制——刻痕感由两道轴头 + 简片留白比例营造
         }
     }
 }

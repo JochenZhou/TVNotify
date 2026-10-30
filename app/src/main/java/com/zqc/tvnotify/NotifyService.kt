@@ -34,7 +34,7 @@ class NotifyService : Service() {
         private const val NOTIFICATION_ID = 8791
 
         /** 与 app/build.gradle.kts 的 versionName 保持一致；/health 与 mDNS TXT 都用它 */
-        const val VERSION_NAME = "1.1.0"
+        const val VERSION_NAME = "1.2.0"
 
         /**
          * 供设置界面显示「是否正在监听」。
@@ -44,6 +44,10 @@ class NotifyService : Service() {
          */
         @Volatile
         var isServerRunning: Boolean = false
+
+        /** 最近一次服务启动失败的异常原因（如端口被占用），供 UI 提示排障使用。 */
+        @Volatile
+        var lastError: String? = null
 
         /**
          * 统一入口：API 26+ 必须用 startForegroundService，
@@ -216,6 +220,7 @@ class NotifyService : Service() {
                     serverStarting = false
                 }
                 isServerRunning = true
+                lastError = null
                 Log.i(TAG, "HTTP 服务已监听 $PORT")
                 // 端口真的绑上了再广播，否则 HA 会发现一个连不上的服务
                 startMdnsIfNeeded()
@@ -225,6 +230,7 @@ class NotifyService : Service() {
                     serverStarting = false
                 }
                 isServerRunning = false
+                lastError = e.message ?: "端口 $PORT 可能被占用"
                 Log.e(TAG, "HTTP 服务启动失败（端口可能被占用）", e)
             }
         }, "tvnotify-http").start()

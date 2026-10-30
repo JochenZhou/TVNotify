@@ -102,6 +102,9 @@ android {
         // 通知栏 / TYPE_PHONE 等已废弃 API 是有意为之（电视端 API 23 兼容），不让 lint 阻断出包
         abortOnError = false
         checkReleaseBuilds = false
+        // 允许 API 23 兼容特例，但保留严格的 NewApi 检查以防隐式引入不兼容 API
+        disable += listOf("Deprecation", "ExpiredTargetSdkVersion")
+        enable += listOf("NewApi")
     }
 }
 

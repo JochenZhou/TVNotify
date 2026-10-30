@@ -35,28 +35,22 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 
 /**
- * 设置界面：全部用 Framework View 以代码构建。
+ * 电视端设置与大屏仪表盘界面：全部基于 Android Framework View 纯代码构建。
  *
- * 为什么手写代码而不是 XML：本工程不引入 AppCompat，用原生 Button 时要精确控制
- * 焦点态（电视遥控器 D-Pad）与背景 StateListDrawable，代码构建比 XML + theme 覆盖更可控；
- * 同时整个工程只需 res/drawable 一个矢量图标，减少资源缺失风险。
+ * 优化特性：
+ * 1. 电视横屏双栏排版：左侧状态与操作控制台，右侧灵石符印二维码与快速互联卡片，
+ *    在 1080p 电视大屏上免上下滚动，一览无余；
+ * 2. 遥控器友好交互：遥控器方向键（D-Pad）在各卡片与按钮间平滑流转，
+ *    聚焦时触发细腻的灵光微缩放与高亮描边；
+ * 3. 仙侠玉简美学浸润：支持「修仙玉简」与「现代深色」一键双向平滑切换。
  */
 class MainActivity : Activity() {
 
     companion object {
         private const val TAG = "TVNotifyMain"
         private const val REQUEST_CODE_NOTIFICATION = 1001
-        private const val QR_PIXEL_SIZE = 260
+        private const val QR_PIXEL_SIZE = 240
 
-        private val WINDOW_BG = Color.parseColor("#FF101114")
-        private val CARD_BG = Color.parseColor("#FF1A1C20")
-        private val CARD_STROKE = Color.parseColor("#FF2A2D33")
-        private val HINT_COLOR = Color.parseColor("#FF9A9AA2")
-        private val ACCENT_COLOR = Color.parseColor("#FF4C9AFF")
-        private val BUTTON_BG = Color.parseColor("#FF2A2C31")
-        private val BUTTON_STROKE = Color.parseColor("#FF3A3D45")
-
-        // 不用 const：ViewGroup 的静态常量在不同 AGP 下不保证被当成编译期常量
         private val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
         private val WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT
     }
@@ -65,20 +59,23 @@ class MainActivity : Activity() {
     private lateinit var tokenValue: TextView
     private lateinit var urlValue: TextView
     private lateinit var qrImage: ImageView
+    private lateinit var qrTitleView: TextView
+    private lateinit var qrSubtitleView: TextView
     private lateinit var testButton: Button
     private lateinit var copyButton: Button
     private lateinit var resetButton: Button
+    private lateinit var themeButton: Button
     private lateinit var titleView: TextView
     private lateinit var subtitleView: TextView
     private lateinit var callInfoTitleView: TextView
     private lateinit var footerView: TextView
-    private lateinit var themeButton: Button
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var bannerController: BannerController? = null
     private var currentUrl: String = ""
-    private var theme: Theme = Theme.DEFAULT
+    private var cachedIp: String = "127.0.0.1"
+    private var theme: Theme = Theme.XIUXIAN
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,25 +84,23 @@ class MainActivity : Activity() {
         setContentView(buildRootView())
         requestNotificationPermissionIfNeeded()
         refreshUi()
-        // 打开界面即尝试拉起常驻服务，避免用户以为要手动点「启动」
+
+        // 打开界面即尝试拉起常驻服务
         NotifyService.start(this)
-        // 服务是异步绑定端口的，这里的刷新只是「首次进入时别一直显示未运行」的兜底轮询，
-        // 绑定成功后 MainActivity 不会收到任何回调，所以用两次延迟刷新即可。
         mainHandler.postDelayed({ if (!isFinishing) refreshUi() }, 600L)
         mainHandler.postDelayed({ if (!isFinishing) refreshUi() }, 1600L)
-        // 电视遥控器进入界面后必须立刻有可见焦点，否则用户不知道按哪
+
+        // 默认将焦点停留在「试传一简」按钮上
         testButton.requestFocus()
     }
 
     override fun onResume() {
         super.onResume()
-        // 从悬浮窗授权页返回时需要刷新权限状态
         refreshUi()
     }
 
     override fun onDestroy() {
         bannerController?.dismissImmediately()
-        // MediaPlayer 必须显式 release，否则音频焦点与会话会被一直占着
         bannerController?.release()
         bannerController = null
         mainHandler.removeCallbacksAndMessages(null)
@@ -113,106 +108,158 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------
-    // UI 构建
+    // UI 构建：电视大屏双栏控制台
     // ------------------------------------------------------------------
 
     private fun buildRootView(): View {
         val scroll = ScrollView(this)
-        scroll.setBackgroundColor(WINDOW_BG)
+        scroll.setBackgroundColor(theme.windowBg)
         scroll.isFillViewport = true
         scroll.isFocusable = false
         scroll.isFocusableInTouchMode = false
 
-        val column = LinearLayout(this)
-        column.orientation = LinearLayout.VERTICAL
-        column.setPadding(dp(56), dp(40), dp(56), dp(40))
-        column.isFocusable = false
-        // LayoutParams 是 FrameLayout 声明的静态内部类；Java 允许用子类名 ScrollView.LayoutParams 访问，
-        // 但 Kotlin 不解析「继承来的嵌套类」，写 ScrollView.LayoutParams 会 Unresolved reference。
-        // 也不能退化成 ViewGroup.LayoutParams：FrameLayout.onMeasure 会强转成自己的 LayoutParams，运行期崩溃。
-        scroll.addView(column, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        // 外层垂直容器
+        val rootColumn = LinearLayout(this)
+        rootColumn.orientation = LinearLayout.VERTICAL
+        rootColumn.setPadding(dp(48), dp(32), dp(48), dp(32))
+        rootColumn.isFocusable = false
+        scroll.addView(rootColumn, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        titleView = makeText(theme.appTitle, 34f, Color.WHITE, true)
+        // 1. 顶部标题栏（主标题 + 副标题）
+        val headerRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        titleView = makeText(theme.appTitle, 32f, Color.WHITE, true)
         if (theme == Theme.XIUXIAN) {
             titleView.typeface = Typeface.SERIF
+            titleView.setShadowLayer(10f, 0f, 1f, Color.argb(0x80, 0x36, 0xD1, 0xA8))
         }
-        column.addView(titleView)
-        subtitleView = makeText(theme.appSubtitle, 15f, HINT_COLOR, false).apply {
-            setPadding(0, dp(6), 0, dp(22))
+        headerRow.addView(titleView)
+
+        subtitleView = makeText(theme.appSubtitle, 14f, theme.hintColor, false).apply {
+            setPadding(0, dp(4), 0, dp(18))
         }
-        column.addView(subtitleView)
+        headerRow.addView(subtitleView)
+        rootColumn.addView(headerRow)
 
-        val infoCard = makeCard()
-        statusValue = makeText("", 16f, Color.WHITE, false)
-        statusValue.setLineSpacing(dp(6).toFloat(), 1f)
-        infoCard.addView(statusValue)
-        column.addView(infoCard, linearParams(topMargin = 0))
+        // 2. 主体横向双栏布局
+        val mainRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            isFocusable = false
+        }
 
+        // === 左栏 (控制台：运行状态 + 符钥地址 + 4个主操作按钮) ===
+        val leftColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isFocusable = false
+        }
+
+        // 状态卡片（未授权悬浮窗时支持点击直跳授权页）
+        val statusCard = makeCard().apply {
+            setOnClickListener {
+                if (!Settings.canDrawOverlays(this@MainActivity)) {
+                    openOverlaySettings()
+                }
+            }
+        }
+        statusValue = makeText("", 15f, Color.WHITE, false).apply {
+            setLineSpacing(dp(6).toFloat(), 1f)
+        }
+        statusCard.addView(statusValue)
+        leftColumn.addView(statusCard)
+
+        // 调用信息卡片
         val urlCard = makeCard()
-        callInfoTitleView = makeText(theme.callInfoTitle, 14f, HINT_COLOR, false)
+        callInfoTitleView = makeText(theme.callInfoTitle, 13f, theme.hintColor, false)
         urlCard.addView(callInfoTitleView)
         tokenValue = makeText("", 16f, Color.WHITE, true).apply {
-            setPadding(0, dp(8), 0, dp(2))
+            setPadding(0, dp(6), 0, dp(2))
         }
-        urlValue = makeText("", 16f, ACCENT_COLOR, false).apply {
+        urlValue = makeText("", 15f, theme.accentColor, false).apply {
             setPadding(0, dp(2), 0, dp(4))
         }
         urlCard.addView(tokenValue)
         urlCard.addView(urlValue)
-        column.addView(urlCard, linearParams(topMargin = dp(16)))
+        leftColumn.addView(urlCard, linearParams(topMargin = dp(14)))
 
-        val qrCard = LinearLayout(this)
-        qrCard.orientation = LinearLayout.VERTICAL
-        qrCard.gravity = Gravity.CENTER_HORIZONTAL
-        qrCard.setPadding(dp(14), dp(14), dp(14), dp(14))
-        qrCard.background = roundedRect(dp(14).toFloat(), Color.WHITE, 0, Color.TRANSPARENT)
-        qrImage = ImageView(this)
-        qrImage.scaleType = ImageView.ScaleType.FIT_CENTER
-        qrImage.isFocusable = false
-        qrImage.setBackgroundColor(Color.WHITE)
-        qrCard.addView(qrImage, LinearLayout.LayoutParams(dp(QR_PIXEL_SIZE), dp(QR_PIXEL_SIZE)))
-        column.addView(qrCard, linearParams(width = WRAP_CONTENT, topMargin = dp(18)))
-
-        val buttonRow = LinearLayout(this)
-        buttonRow.orientation = LinearLayout.HORIZONTAL
+        // 2x2 按钮网格
+        val buttonRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         testButton = buildButton(theme.testButtonText) { showTestBanner() }
         copyButton = buildButton(theme.copyButtonText) { copyCallUrl() }
+        buttonRow1.addView(testButton, weightedParams(0))
+        buttonRow1.addView(copyButton, weightedParams(1))
+        leftColumn.addView(buttonRow1, linearParams(topMargin = dp(16)))
+
+        val buttonRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         resetButton = buildButton(theme.resetButtonText) { resetToken() }
-        buttonRow.addView(testButton, weightedParams(0))
-        buttonRow.addView(copyButton, weightedParams(1))
-        buttonRow.addView(resetButton, weightedParams(2))
-        column.addView(buttonRow, linearParams(topMargin = dp(24)))
-
-        val themeRow = LinearLayout(this)
-        themeRow.orientation = LinearLayout.HORIZONTAL
-        themeRow.gravity = Gravity.CENTER_VERTICAL
         themeButton = buildButton(themeToggleLabel()) { toggleTheme() }
-        themeRow.addView(
-            makeText("界面主题", 14f, HINT_COLOR, false).apply {
-                setPadding(0, 0, dp(14), 0)
-                gravity = Gravity.CENTER_VERTICAL
-            },
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-        )
-        themeRow.addView(
-            themeButton,
-            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-        )
-        column.addView(themeRow, linearParams(topMargin = dp(18)))
+        buttonRow2.addView(resetButton, weightedParams(0))
+        buttonRow2.addView(themeButton, weightedParams(1))
+        leftColumn.addView(buttonRow2, linearParams(topMargin = dp(10)))
 
-        footerView = makeText(theme.footerHint, 13f, HINT_COLOR, false).apply {
-            setPadding(0, dp(22), 0, 0)
+        val leftParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.25f).apply {
+            rightMargin = dp(24)
         }
-        column.addView(footerView)
+        mainRow.addView(leftColumn, leftParams)
 
+        // === 右栏 (互联卡片：二维码 + 运维命令辅助箱) ===
+        val rightColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isFocusable = false
+        }
+
+        val qrCard = makeCard().apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        qrTitleView = makeText(theme.qrTitle, 15f, Color.WHITE, true).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, dp(4))
+        }
+        qrSubtitleView = makeText(theme.qrSubtitle, 12f, theme.hintColor, false).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, dp(12))
+        }
+        qrCard.addView(qrTitleView)
+        qrCard.addView(qrSubtitleView)
+
+        // 二维码白底容器
+        val qrBox = LinearLayout(this).apply {
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            background = roundedRect(dp(12).toFloat(), Color.WHITE, 0, Color.TRANSPARENT)
+            gravity = Gravity.CENTER
+        }
+        qrImage = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            isFocusable = false
+            setBackgroundColor(Color.WHITE)
+        }
+        qrBox.addView(qrImage, LinearLayout.LayoutParams(dp(QR_PIXEL_SIZE), dp(QR_PIXEL_SIZE)))
+        qrCard.addView(qrBox)
+
+        rightColumn.addView(qrCard)
+
+        // 底部运维提示箱
+        val helperCard = makeCard().apply {
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+        }
+        footerView = makeText(theme.footerHint, 12f, theme.hintColor, false).apply {
+            setLineSpacing(dp(3).toFloat(), 1f)
+        }
+        helperCard.addView(footerView)
+        rightColumn.addView(helperCard, linearParams(topMargin = dp(14)))
+
+        val rightParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.95f)
+        mainRow.addView(rightColumn, rightParams)
+
+        rootColumn.addView(mainRow)
         return scroll
     }
 
     private fun makeCard(): LinearLayout {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
-        card.setPadding(dp(20), dp(16), dp(20), dp(16))
-        card.background = roundedRect(dp(14).toFloat(), CARD_BG, dp(1), CARD_STROKE)
+        card.setPadding(dp(20), dp(14), dp(20), dp(14))
+        card.background = roundedRect(dp(14).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
         return card
     }
 
@@ -222,43 +269,50 @@ class MainActivity : Activity() {
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp)
         view.setTextColor(color)
         view.typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-        view.includeFontPadding = true
+        view.includeFontPadding = false
         return view
     }
 
     /**
-     * 遥控器焦点样式：普通态深灰 + 细描边，聚焦态主题蓝 + 粗白描边，
-     * 保证在电视大屏上「当前选中项」一眼可见。
+     * 遥控器焦点样式与触觉反馈：
+     * 普通态：深青/深灰底色 + 细描边；
+     * 聚焦态：高亮灵玉青/主题蓝 + 灵光白边 + 放大 1.04 倍平滑微动效。
      */
     private fun buildButton(label: String, onClick: () -> Unit): Button {
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(dp(12).toFloat(), ACCENT_COLOR, dp(2), Color.WHITE)
+            roundedRect(dp(10).toFloat(), theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(android.R.attr.state_pressed),
-            roundedRect(dp(12).toFloat(), ACCENT_COLOR, dp(2), Color.WHITE)
+            roundedRect(dp(10).toFloat(), theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(),
-            roundedRect(dp(12).toFloat(), BUTTON_BG, dp(1), BUTTON_STROKE)
+            roundedRect(dp(10).toFloat(), theme.buttonBg, dp(1), theme.buttonStroke)
         )
 
         val button = Button(this)
         button.text = label
         button.setTextColor(Color.WHITE)
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         button.typeface = Typeface.DEFAULT_BOLD
         button.background = states
-        button.setPadding(dp(24), dp(12), dp(24), dp(12))
+        button.setPadding(dp(16), dp(12), dp(16), dp(12))
         button.isFocusable = true
-        // 电视上不存在触摸模式焦点，置 false 才能让 D-Pad 焦点一直可见
         button.isFocusableInTouchMode = false
-        // 默认的 elevation 动画会在聚焦时抖动，电视端不需要
         button.stateListAnimator = null
-        // 原生 Button 已经处理 KEYCODE_DPAD_CENTER / KEYCODE_ENTER 的点击，
-        // 因此这里只挂 onClickListener，不要再自行拦截按键，否则会重复触发。
+
+        // 遥控器大屏悬浮动效
+        button.setOnFocusChangeListener { v, hasFocus ->
+            if (hasFocus) {
+                v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(140).start()
+            } else {
+                v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(140).start()
+            }
+        }
+
         button.setOnClickListener { onClick() }
         return button
     }
@@ -276,7 +330,7 @@ class MainActivity : Activity() {
     private fun weightedParams(position: Int): LinearLayout.LayoutParams {
         val params = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
         if (position > 0) {
-            params.leftMargin = dp(16)
+            params.leftMargin = dp(12)
         }
         return params
     }
@@ -286,20 +340,44 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------
 
     private fun refreshUi() {
-        val ip = NetUtils.localIpv4()
         val token = Prefs.getToken(this)
-        currentUrl = "http://$ip:${NotifyService.PORT}/$token/notify"
         val overlayGranted = Settings.canDrawOverlays(this)
         val running = NotifyService.isServerRunning
+        val errorMsg = NotifyService.lastError
+
+        // 异步查询局域网 IP，避免遍历网络接口阻塞主线程
+        Thread({
+            val freshIp = NetUtils.localIpv4()
+            mainHandler.post {
+                if (isFinishing || isDestroyed) return@post
+                cachedIp = freshIp
+                updateStateAndQr(token, overlayGranted, running, errorMsg)
+            }
+        }, "tvnotify-ip").start()
+
+        updateStateAndQr(token, overlayGranted, running, errorMsg)
+    }
+
+    private fun updateStateAndQr(
+        token: String,
+        overlayGranted: Boolean,
+        running: Boolean,
+        errorMsg: String?
+    ) {
+        val ip = cachedIp
         val ipUsable = NetUtils.hasUsableIp(ip)
+        currentUrl = "http://$ip:${NotifyService.PORT}/$token/notify"
 
         statusValue.text = buildString {
-            append(theme.statusLine(running))
+            append(if (running) "● " else if (!errorMsg.isNullOrBlank()) "❌ " else "○ ")
+            append(theme.statusLine(running, errorMsg))
             append('\n')
             append(theme.portLine(NotifyService.PORT, running))
             append('\n')
+            append(if (overlayGranted) "● " else "▲ ")
             append(theme.overlayLine(overlayGranted))
             append('\n')
+            append(if (ipUsable) "🌐 " else "⚠️ ")
             append(theme.ipLine(ip, ipUsable))
         }
 
@@ -320,7 +398,6 @@ class MainActivity : Activity() {
                 if (isFinishing || isDestroyed) {
                     return@post
                 }
-                // 期间可能已经重置 token，避免把旧二维码贴上去
                 if (content != currentUrl) {
                     return@post
                 }
@@ -336,7 +413,7 @@ class MainActivity : Activity() {
     private fun createQrBitmap(content: String, sizePx: Int): Bitmap? {
         return try {
             val hints = HashMap<EncodeHintType, Any>()
-            hints[EncodeHintType.MARGIN] = 2
+            hints[EncodeHintType.MARGIN] = 1
             hints[EncodeHintType.CHARACTER_SET] = "UTF-8"
             val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
             val width = matrix.width
@@ -358,7 +435,7 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------
-    // 交互
+    // 交互操作
     // ------------------------------------------------------------------
 
     private fun showTestBanner() {
@@ -368,12 +445,11 @@ class MainActivity : Activity() {
             return
         }
         val controller = bannerController ?: BannerController(this).also { bannerController = it }
-        // 走和 HTTP 推送完全相同的数据类，顺带验证提示音资源 R.raw.chord 是否可用
         controller.show(
             BannerRequest(
                 title = theme.testBannerTitle,
                 text = theme.testBannerText,
-                durationSeconds = 4
+                durationSeconds = 5
             )
         )
     }
@@ -389,22 +465,19 @@ class MainActivity : Activity() {
     }
 
     private fun resetToken() {
-        // 服务端每次请求都会重新读取 SharedPreferences，所以这里无需重启服务
         val token = Prefs.resetToken(this)
         refreshUi()
         toast(theme.tokenResetToast(token))
     }
 
-    /** 按钮文案显示「将切换到」的主题名，按下即切换并整页重绘。 */
     private fun themeToggleLabel(): String = when (theme) {
-        Theme.DEFAULT -> "切换：修仙主题"
-        Theme.XIUXIAN -> "切换：默认主题"
+        Theme.XIUXIAN -> "切换：默认深色"
+        Theme.DEFAULT -> "切换：修仙玉简"
     }
 
     private fun toggleTheme() {
         theme = if (theme == Theme.XIUXIAN) Theme.DEFAULT else Theme.XIUXIAN
         Theme.save(this, theme)
-        // 界面是 buildRootView 一次性搭出来的，直接整页重建最省事且不会留旧文案
         setContentView(buildRootView())
         refreshUi()
         testButton.requestFocus()
@@ -425,7 +498,6 @@ class MainActivity : Activity() {
 
     private fun requestNotificationPermissionIfNeeded() {
         if (Build.VERSION.SDK_INT < 33) {
-            // API 23~32 没有通知权限的概念，前台服务通知无需授权
             return
         }
         if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
