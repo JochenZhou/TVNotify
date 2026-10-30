@@ -17,6 +17,7 @@ object Prefs {
 
     private const val FILE_NAME = "tvnotify_prefs"
     private const val KEY_TOKEN = "access_token"
+    private const val KEY_THEME = "ui_theme"
 
     private const val TOKEN_LENGTH = 8
 
@@ -58,6 +59,15 @@ object Prefs {
             store.edit().putString(KEY_TOKEN, fresh).commit()
             return fresh
         }
+    }
+
+    /** 读取已保存的主题 id；无记录返回 null，由调用方回落默认主题。 */
+    fun getThemeId(context: Context): String? =
+        prefs(context).getString(KEY_THEME, null)
+
+    /** 保存主题 id。UI 切换后立即生效，不需要重启服务。 */
+    fun setThemeId(context: Context, id: String) {
+        prefs(context).edit().putString(KEY_THEME, id).apply()
     }
 
     private fun generateToken(): String {

@@ -19,20 +19,14 @@ enum class Theme(val storageId: String) {
     XIUXIAN("xiuxian");
 
     companion object {
-        private const val KEY_THEME = "ui_theme"
-
         /** 从 Prefs 读取主题；无记录或值非法时回落默认主题。 */
         fun current(context: android.content.Context): Theme {
-            val store = context.applicationContext
-                .getSharedPreferences(Prefs.FILE_NAME, android.content.Context.MODE_PRIVATE)
-            val saved = store.getString(KEY_THEME, null) ?: return DEFAULT
+            val saved = Prefs.getThemeId(context) ?: return DEFAULT
             return entries.firstOrNull { it.storageId == saved } ?: DEFAULT
         }
 
         fun save(context: android.content.Context, theme: Theme) {
-            context.applicationContext
-                .getSharedPreferences(Prefs.FILE_NAME, android.content.Context.MODE_PRIVATE)
-                .edit().putString(KEY_THEME, theme.storageId).commit()
+            Prefs.setThemeId(context, theme.storageId)
         }
     }
 
