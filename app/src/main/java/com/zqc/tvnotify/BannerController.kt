@@ -627,12 +627,13 @@ class BannerController(private val context: Context) {
         val mediaWidth = minOf(dp(220f), (bannerWidthPx * 0.34f).toInt()).coerceAtLeast(dp(96f))
         val mediaHeight = (mediaWidth * 9 / 16).coerceAtLeast(dp(54f))
 
+        val mediaCornerRadius = dp(if (theme == Theme.XIUXIAN) 14f else 10f).toFloat()
+
         val frame = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(mediaWidth, mediaHeight).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 setMargins(dp(16f), 0, 0, 0)
             }
-            val cornerRadius = dp(if (theme == Theme.XIUXIAN) 14f else 10f).toFloat()
             val strokeColor = if (theme == Theme.XIUXIAN) {
                 theme.bannerStrokeColor(request.level)
             } else {
@@ -640,7 +641,7 @@ class BannerController(private val context: Context) {
             }
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                this.cornerRadius = cornerRadius
+                this.cornerRadius = mediaCornerRadius
                 setColor(if (theme == Theme.XIUXIAN) Color.argb(0xA0, 0x09, 0x16, 0x1A) else Color.argb(0xA0, 0x15, 0x16, 0x1A))
                 setStroke(dp(1.2f), strokeColor)
             }
@@ -649,7 +650,7 @@ class BannerController(private val context: Context) {
             // 空裁剪，媒体区整块不可见——电视正常、新手机上图片视频全无就是这个坑。
         }
 
-        val imageView = RoundedCornerImageView(context, cornerRadius).apply {
+        val imageView = RoundedCornerImageView(context, mediaCornerRadius).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
