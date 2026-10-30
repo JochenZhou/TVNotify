@@ -704,8 +704,11 @@ class MainActivity : Activity() {
     }
 
     /**
-     * 视频测试：走本机内置 MJPEG 测试流（/{token}/stream，assets 抽帧循环）。
-     * 不依赖任何外部服务，电视断网也能测。
+     * 视频测试：用 App 内置抽帧动画（assets/testframes 循环）。
+     *
+     * 不走本机 /{token}/stream：那个接口是给 HA/外部推送用的，测渲染时不该把它
+     * 拉进来当变量——服务没起、端口被占、明文被拦都会让用户只看到一块空白，
+     * 反而分不清是媒体卡坏了还是网络坏了。
      */
     private fun showTestVideoBanner() {
         if (!Settings.canDrawOverlays(this)) {
@@ -713,33 +716,15 @@ class MainActivity : Activity() {
             openOverlaySettings()
             return
         }
-        // 视频测试走本机 /{token}/stream，必须服务在监听端口才有流可播。
-        // 手机上服务经常还没起（电视是开机自启常驻），不先拉起服务就只能看到空媒体框。
-        showTestVideoBannerWhenReady(0)
-    }
-
-    private fun showTestVideoBannerWhenReady(attempt: Int) {
-        if (!NotifyService.isServerRunning) {
-            if (attempt == 0) {
-                NotifyService.start(this)
-            }
-            if (attempt >= 20) {
-                toast(
-                    if (theme.isXianxia) "阵法未能开启，灵镜无源可循"
-                    else "服务未启动，视频流不可用"
-                )
-                return
-            }
-            mainHandler.postDelayed({ if (!isFinishing) showTestVideoBannerWhenReady(attempt + 1) }, 150L)
-            return
-        }
         val controller = bannerController ?: BannerController(this).also { bannerController = it }
         controller.show(
             BannerRequest(
                 title = if (theme.isXianxia) "灵镜自演" else "视频测试",
-                text = if (theme.isXianxia) "灵镜自内映照，影像循环不熄。" else "内置 MJPEG 测试流循环播放。",
+                text = if (theme.isXianxia) "灵镜自内映照，影像循环不熄。" else "内置抽帧动画循环播放。",
                 durationSeconds = 30,
-                videoUrl = "http://127.0.0.1:${NotifyService.PORT}/${Prefs.getToken(this)}/stream"
+                // 内置抽帧动画：不走 HTTP、不依赖服务是否在监听，
+                // 用来单纯验证「媒体卡能不能渲染出画面」
+                assetFrames = true
             )
         )
     }

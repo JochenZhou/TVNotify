@@ -77,10 +77,13 @@ data class BannerRequest(
     val sound: Boolean = true,
     val imageUrl: String? = null,
     val imageBase64: String? = null,
-    val videoUrl: String? = null
+    val videoUrl: String? = null,
+    /** 内置抽帧动画：直接读 assets/testframes 循环播放，不依赖任何网络/服务 */
+    val assetFrames: Boolean = false
 ) {
     val hasMedia: Boolean
-        get() = !videoUrl.isNullOrBlank() || !imageUrl.isNullOrBlank() || !imageBase64.isNullOrBlank()
+        get() = assetFrames || !videoUrl.isNullOrBlank() || !imageUrl.isNullOrBlank() ||
+                !imageBase64.isNullOrBlank()
 
     companion object {
         const val DEFAULT_DURATION_SEC = 5
@@ -657,26 +660,36 @@ class BannerController(private val context: Context) {
             )
             scaleType = ImageView.ScaleType.CENTER_CROP
         }
-        // 占位提示：媒体卡构建成功但解码/连流失败时给用户看得见的反馈，
-        // 也便于区分「媒体卡不存在」和「媒体卡在但没内容」两种情况
+        // 状态行：媒体卡在、但图片/视频没出来时，把卡在哪一步直接显示出来，
+        // 没有 logcat 也能定位（这次手机端两路都空，就是靠它才能一次看清原因）
+        val status = MediaStatus()
         val placeholder = TextView(context).apply {
             text = if (theme == Theme.XIUXIAN) "灵图凝聚中…" else "正在载入…"
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setTextColor(Color.argb(0x99, 0xFF, 0xFF, 0xFF))
+            setTextColor(Color.argb(0xCC, 0xFF, 0xFF, 0xFF))
             gravity = Gravity.CENTER
             includeFontPadding = false
+            maxLines = 3
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
+            setPadding(dp(6f), dp(2f), dp(6f), dp(2f))
         }
         frame.addView(placeholder)
         frame.addView(imageView)
 
-        val hidePlaceholder = Runnable { placeholder.visibility = View.GONE }
-        val markFailed = Runnable {
-            placeholder.text = if (theme == Theme.XIUXIAN) "灵图未显" else "图片未加载"
+        val hideStatus = Runnable { placeholder.visibility = View.GONE }
+        val showStatus = { text: String ->
+            placeholder.text = text
             placeholder.visibility = View.VISIBLE
+        }
+        val prefix = if (theme == Theme.XIUXIAN) "灵图未显：" else "未加载："
+        val markFailed = Runnable { showStatus(prefix + status.step) }
+
+        // 看门狗：4 秒还没出画面就把最后一步显示出来，避免只看到「凝聚中…」干等
+        val watchdog = Runnable {
+            if (imageView.drawable == null) markFailed.run()
         }
         val mediaWidthActual = mediaWidth
         Log.i(
@@ -710,13 +723,24 @@ class BannerController(private val context: Context) {
             frame.addView(liveBadge)
         }
 
-        activeMediaSession = if (!request.videoUrl.isNullOrBlank()) {
+        activeMediaSession = if (request.assetFrames) {
+            AssetFramesSession(
+                assets = context.assets,
+                targetView = imageView,
+                mainHandler = mainHandler,
+                status = status,
+                onLoaded = { mainHandler.post(hideStatus) },
+                onFailed = { mainHandler.post(markFailed) }
+            )
+        } else if (!request.videoUrl.isNullOrBlank()) {
             MjpegStreamSession(
                 videoUrl = request.videoUrl,
                 targetView = imageView,
                 mainHandler = mainHandler,
-                onLoaded = { mainHandler.post(hidePlaceholder) },
+                status = status,
+                onLoaded = { mainHandler.post(hideStatus) },
                 onFailure = {
+                    status.step = "视频流失败：" + status.step
                     if (!request.imageUrl.isNullOrBlank() || !request.imageBase64.isNullOrBlank()) {
                         mainHandler.post {
                             if (bannerView != null) {
@@ -725,13 +749,16 @@ class BannerController(private val context: Context) {
                                     imageBase64 = request.imageBase64,
                                     targetView = imageView,
                                     mainHandler = mainHandler,
-                                    onLoaded = { mainHandler.post(hidePlaceholder) },
+                                    status = status,
+                                    onLoaded = { mainHandler.post(hideStatus) },
                                     onFailed = { mainHandler.post(markFailed) }
                                 )
                                 activeMediaSession = fallback
                                 fallback.start()
                             }
                         }
+                    } else {
+                        mainHandler.post(markFailed)
                     }
                 }
             )
@@ -741,17 +768,107 @@ class BannerController(private val context: Context) {
                 imageBase64 = request.imageBase64,
                 targetView = imageView,
                 mainHandler = mainHandler,
-                onLoaded = { mainHandler.post(hidePlaceholder) },
+                status = status,
+                onLoaded = { mainHandler.post(hideStatus) },
                 onFailed = { mainHandler.post(markFailed) }
             )
         }
 
+        mainHandler.postDelayed(watchdog, 4000L)
         return frame
     }
 
     private interface MediaSession {
         fun start()
         fun stop()
+    }
+
+    /** 媒体加载进度：最后一步写在这里，失败时直接显示到横幅上 */
+    private class MediaStatus {
+        @Volatile var step: String = "未开始"
+    }
+
+    /**
+     * 内置抽帧动画会话：直接读 `assets/testframes/` 里的 JPEG 循环播放。
+     *
+     * 为什么不走本机 `/{token}/stream`：内置测试的意义是「不依赖任何外部条件也能验证
+     * 媒体卡渲染」。走 HTTP 时只要服务没起、端口被占、明文被拦，用户看到的就只是一块
+     * 空白，测试本身失去了排除变量的作用。抽帧在 App 内直接解码，零网络依赖。
+     */
+    private class AssetFramesSession(
+        private val assets: android.content.res.AssetManager,
+        private val targetView: ImageView,
+        private val mainHandler: Handler,
+        private val status: MediaStatus,
+        private val onLoaded: (() -> Unit)? = null,
+        private val onFailed: (() -> Unit)? = null
+    ) : MediaSession {
+        @Volatile private var isRunning = false
+        private var frames: List<ByteArray> = emptyList()
+        private var frameIndex = 0
+
+        private val tick = object : Runnable {
+            override fun run() {
+                if (!isRunning || frames.isEmpty()) return
+                val bytes = frames[frameIndex % frames.size]
+                frameIndex++
+                val bitmap = try {
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                } catch (e: Throwable) {
+                    null
+                }
+                if (bitmap != null) {
+                    targetView.setImageBitmap(bitmap)
+                    if (frameIndex == 1) onLoaded?.invoke()
+                } else if (frameIndex == 1) {
+                    status.step = "抽帧解码失败"
+                    onFailed?.invoke()
+                    return
+                }
+                mainHandler.postDelayed(this, FRAME_INTERVAL_MS)
+            }
+        }
+
+        override fun start() {
+            isRunning = true
+            Thread({
+                try {
+                    status.step = "读取内置抽帧"
+                    val names = assets.list(ASSET_DIR)?.sorted().orEmpty()
+                    val loaded = ArrayList<ByteArray>(names.size)
+                    for (name in names) {
+                        if (!name.lowercase().endsWith(".jpg") && !name.lowercase().endsWith(".jpeg")) continue
+                        try {
+                            assets.open("$ASSET_DIR/$name").use { loaded.add(it.readBytes()) }
+                        } catch (_: Exception) {
+                        }
+                    }
+                    frames = loaded
+                    status.step = "抽帧 ${loaded.size} 张"
+                    if (loaded.isEmpty()) {
+                        onFailed?.invoke()
+                        return
+                    }
+                    mainHandler.post(tick)
+                } catch (e: Throwable) {
+                    status.step = "抽帧异常 ${e.javaClass.simpleName}"
+                    mainHandler.post { onFailed?.invoke() }
+                }
+            }, "tvnotify-assetframes").apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        override fun stop() {
+            isRunning = false
+            mainHandler.removeCallbacks(tick)
+        }
+
+        companion object {
+            private const val ASSET_DIR = "testframes"
+            private const val FRAME_INTERVAL_MS = 250L
+        }
     }
 
     /**
@@ -782,6 +899,7 @@ class BannerController(private val context: Context) {
         private val videoUrl: String,
         private val targetView: ImageView,
         private val mainHandler: Handler,
+        private val status: MediaStatus,
         private val onLoaded: (() -> Unit)? = null,
         private val onFailure: (() -> Unit)?
     ) : MediaSession {
@@ -812,12 +930,15 @@ class BannerController(private val context: Context) {
                     setRequestProperty("Accept", "multipart/x-mixed-replace, image/jpeg, */*")
                 }
                 connection = conn
+                status.step = "连接视频流"
                 conn.connect()
                 if (conn.responseCode != 200) {
                     Log.w(TAG, "MJPEG 连接返回非 200: ${conn.responseCode}")
+                    status.step = "HTTP ${conn.responseCode}"
                     onFailure?.invoke()
                     return
                 }
+                status.step = "已连流，等待首帧"
                 val inStream = BufferedInputStream(conn.inputStream, 16384)
                 inStreamRef = inStream
                 val parser = MjpegFrameParser(inStream)
@@ -825,7 +946,12 @@ class BannerController(private val context: Context) {
                 val minFrameIntervalMs = 66L // ~15 FPS 节流，低端电视芯片低负载运行
 
                 while (isRunning && !Thread.currentThread().isInterrupted) {
-                    val frameData = parser.readNextFrame() ?: break
+                    val frameData = parser.readNextFrame()
+                    if (frameData == null) {
+                        status.step = if (firstFrameShown) "视频流中断" else "视频流无帧"
+                        if (isRunning) onFailure?.invoke()
+                        break
+                    }
                     val now = SystemClock.uptimeMillis()
                     if (now - lastRenderTime < minFrameIntervalMs) {
                         continue
@@ -847,9 +973,10 @@ class BannerController(private val context: Context) {
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (isRunning) {
                     Log.w(TAG, "MJPEG 播放异常: ${e.message}")
+                    status.step = "${e.javaClass.simpleName}: ${e.message?.take(40) ?: ""}"
                     onFailure?.invoke()
                 }
             } finally {
@@ -872,6 +999,7 @@ class BannerController(private val context: Context) {
         private val imageBase64: String?,
         private val targetView: ImageView,
         private val mainHandler: Handler,
+        private val status: MediaStatus,
         private val onLoaded: (() -> Unit)? = null,
         private val onFailed: (() -> Unit)? = null
     ) : MediaSession {
@@ -883,6 +1011,11 @@ class BannerController(private val context: Context) {
             isRunning = true
             workerThread = Thread({
                 try {
+                    status.step = if (!imageBase64.isNullOrBlank()) {
+                        "解码 base64(${imageBase64.length})"
+                    } else {
+                        "下载图片"
+                    }
                     val bytes = if (!imageBase64.isNullOrBlank()) {
                         val raw = imageBase64.trim()
                         val clean = if (raw.contains(",")) raw.substringAfter(",") else raw
@@ -892,9 +1025,11 @@ class BannerController(private val context: Context) {
                     } else null
 
                     val bitmap = if (bytes != null && bytes.isNotEmpty() && isRunning) {
+                        status.step = "解码位图 ${bytes.size}B"
                         decodeSampledBitmap(bytes, 480, 270)
                     } else null
 
+                    status.step = "位图 ${bitmap?.width}x${bitmap?.height} bytes=${bytes?.size ?: 0}"
                     Log.i(TAG, "静态图片解码：bytes=${bytes?.size ?: 0} bitmap=${bitmap?.width}x${bitmap?.height}")
 
                     mainHandler.post {
@@ -910,8 +1045,9 @@ class BannerController(private val context: Context) {
                             }
                         }
                     }
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
                     Log.w(TAG, "加载静态图片异常: ${e.message}")
+                    status.step = "${e.javaClass.simpleName}: ${e.message?.take(40) ?: ""}"
                     mainHandler.post { if (isRunning) onFailed?.invoke() }
                 }
             }, "tvnotify-img").apply {
