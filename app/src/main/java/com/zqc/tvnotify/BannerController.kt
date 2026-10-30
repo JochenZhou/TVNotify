@@ -21,8 +21,9 @@ import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.view.SurfaceHolder
-import android.view.SurfaceView
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import java.util.HashMap
 import android.os.Build
 import android.os.Handler
@@ -662,16 +663,21 @@ class BannerController(private val context: Context) {
         }
         frame.addView(imageView)
 
-        // mp4 专用：SurfaceView 是零拷贝路径，解码器直接把帧送到显示层，
-        // 不经过 Bitmap → GL 上传，所以比 MJPEG 软解省一大截内存。
-        val surfaceView = SurfaceView(context).apply {
+        // mp4 专用：用 TextureView 而不是 SurfaceView。
+        //
+        // 踩坑记录：SurfaceView 在本工程的悬浮窗（TYPE_PHONE/SYSTEM_ALERT）里
+        // 拿不到可用的合成层，解码器起来了、isPlaying=1，但画面全黑。
+        // TextureView 走 GPU 纹理渲染，在悬浮窗里能正常显示，而且能被父容器的
+        // clipToOutline 裁出圆角（SurfaceView 不受裁剪）。
+        // 代价是多一份纹理拷贝，但显示区只有 440×248px，纹理开销可忽略。
+        val textureView = TextureView(context).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
             visibility = View.GONE
         }
-        frame.addView(surfaceView)
+        frame.addView(textureView)
 
         // 动态角标：MJPEG 显示「灵镜」，mp4 显示「灵影」
         val isMp4 = !request.videoFile.isNullOrBlank()
@@ -705,7 +711,7 @@ class BannerController(private val context: Context) {
         }
 
         // 回退链：mp4 → MJPEG → 静态图，任一层失败自动降级，绝不黑屏
-        startMedia(request, imageView, surfaceView, MEDIA_STAGE_MP4)
+        startMedia(request, imageView, textureView, MEDIA_STAGE_MP4)
 
         return frame
     }
@@ -722,22 +728,22 @@ class BannerController(private val context: Context) {
     private fun startMedia(
         request: BannerRequest,
         imageView: ImageView,
-        surfaceView: SurfaceView,
+        textureView: TextureView,
         stage: Int
     ) {
         if (stage == MEDIA_STAGE_MP4 && !request.videoFile.isNullOrBlank()) {
-            surfaceView.visibility = View.VISIBLE
+            textureView.visibility = View.VISIBLE
             imageView.visibility = View.GONE
             val session = Mp4Session(
                 context = context,
                 source = request.videoFile,
-                surfaceView = surfaceView,
+                textureView = textureView,
                 muted = !request.videoSound,
                 mainHandler = mainHandler,
                 onFailure = {
                     mainHandler.post {
                         if (bannerView != null) {
-                            startMedia(request, imageView, surfaceView, MEDIA_STAGE_MJPEG)
+                            startMedia(request, imageView, textureView, MEDIA_STAGE_MJPEG)
                         }
                     }
                 }
@@ -748,7 +754,7 @@ class BannerController(private val context: Context) {
         }
 
         if (stage <= MEDIA_STAGE_MJPEG && !request.videoUrl.isNullOrBlank()) {
-            surfaceView.visibility = View.GONE
+            textureView.visibility = View.GONE
             imageView.visibility = View.VISIBLE
             val session = MjpegStreamSession(
                 videoUrl = request.videoUrl,
@@ -757,7 +763,7 @@ class BannerController(private val context: Context) {
                 onFailure = {
                     mainHandler.post {
                         if (bannerView != null) {
-                            startMedia(request, imageView, surfaceView, MEDIA_STAGE_IMAGE)
+                            startMedia(request, imageView, textureView, MEDIA_STAGE_IMAGE)
                         }
                     }
                 }
@@ -785,7 +791,7 @@ class BannerController(private val context: Context) {
     }
 
     /**
-     * mp4 播放会话：系统 MediaPlayer + SurfaceView（硬件解码、零拷贝）。
+     * mp4 播放会话：系统 MediaPlayer + TextureView（硬件解码）。
      *
      * 为什么不用 ExoPlayer：它要引入整套 AndroidX，APK 从 330KB 涨到 1.8MB+；
      * MediaPlayer 是 API 23 自带的硬件解码路径，本工程得以保持零 AndroidX。
@@ -796,53 +802,62 @@ class BannerController(private val context: Context) {
     private class Mp4Session(
         private val context: Context,
         private val source: String,
-        private val surfaceView: SurfaceView,
+        private val textureView: TextureView,
         private val muted: Boolean,
         private val mainHandler: Handler,
         private val onFailure: (() -> Unit)?
     ) : MediaSession {
 
         private var player: MediaPlayer? = null
-        private var surfaceCallback: SurfaceHolder.Callback? = null
+        private var surfaceTextureListener: TextureView.SurfaceTextureListener? = null
+        private var outputSurface: Surface? = null
 
         @Volatile
         private var stopped = false
 
         override fun start() {
-            val callback = object : SurfaceHolder.Callback {
-                override fun surfaceCreated(holder: SurfaceHolder) {
+            val listener = object : TextureView.SurfaceTextureListener {
+                override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
                     if (!stopped) {
-                        prepare(holder)
+                        prepare(texture)
                     }
                 }
 
-                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
                     // 尺寸变化不需要重建播放器，MediaPlayer 会自动缩放
                 }
 
-                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                    // Surface 销毁（横幅消失/窗口重建）必须先释放，否则下次 setSurface 会失败
+                override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+                    // 返回 true 表示由我们负责释放；必须先把 MediaPlayer 解绑，
+                    // 否则纹理被回收后解码器还在往上面写，会直接把 mediaserver 带崩。
                     releasePlayer()
+                    return true
+                }
+
+                override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {
+                    // 每帧回调，不需要处理
                 }
             }
-            surfaceCallback = callback
-            surfaceView.holder.addCallback(callback)
-            // 横幅重建时 Surface 可能已经可用，surfaceCreated 不会再回调，这里补一次
-            val surface = surfaceView.holder.surface
-            if (surface != null && surface.isValid) {
-                prepare(surfaceView.holder)
+            surfaceTextureListener = listener
+            textureView.surfaceTextureListener = listener
+            // 横幅重建时纹理可能已就绪，onSurfaceTextureAvailable 不会再回调，这里补一次
+            val existing = textureView.surfaceTexture
+            if (existing != null) {
+                prepare(existing)
             }
             probeAspectRatioAsync()
         }
 
-        private fun prepare(holder: SurfaceHolder) {
+        private fun prepare(texture: SurfaceTexture) {
             if (stopped || player != null) {
                 return
             }
             try {
                 val mp = MediaPlayer()
                 player = mp
-                mp.setSurface(holder.surface)
+                val surface = Surface(texture)
+                outputSurface = surface
+                mp.setSurface(surface)
                 when {
                     source.startsWith("http://") || source.startsWith("https://") -> mp.setDataSource(source)
                     source.startsWith("content://") || source.startsWith("file://") ->
@@ -869,7 +884,7 @@ class BannerController(private val context: Context) {
         }
 
         /**
-         * 后台读取视频宽高，再按 16:9 窗口等比缩放 SurfaceView。
+         * 后台读取视频宽高，再按 16:9 窗口等比缩放 TextureView。
          *
          * 放后台线程：http 源的元数据探测会走网络，主线程做会卡住横幅入场动画。
          */
@@ -887,7 +902,7 @@ class BannerController(private val context: Context) {
                     val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
                         ?.toIntOrNull()
                     if (w != null && h != null && w > 0 && h > 0 && !stopped) {
-                        surfaceView.post { fitInside(w, h) }
+                        textureView.post { fitInside(w, h) }
                     }
                 } catch (e: Exception) {
                     // 探测失败就保持铺满，不影响播放本身
@@ -905,7 +920,7 @@ class BannerController(private val context: Context) {
             if (stopped) {
                 return
             }
-            val parent = surfaceView.parent as? View ?: return
+            val parent = textureView.parent as? View ?: return
             val boxW = parent.width
             val boxH = parent.height
             if (boxW <= 0 || boxH <= 0) {
@@ -917,26 +932,27 @@ class BannerController(private val context: Context) {
                 (videoH * scale).toInt().coerceAtLeast(1)
             )
             params.gravity = Gravity.CENTER
-            surfaceView.layoutParams = params
+            textureView.layoutParams = params
         }
 
         private fun releasePlayer() {
             val mp = player
             player = null
+            val surface = outputSurface
+            outputSurface = null
             if (mp != null) {
                 try { mp.stop() } catch (_: Exception) {}
                 try { mp.reset() } catch (_: Exception) {}
                 try { mp.release() } catch (_: Exception) {}
             }
+            // Surface 必须显式释放，否则 TextureView 反复创建时会泄漏图形缓冲
+            try { surface?.release() } catch (_: Exception) {}
         }
 
         override fun stop() {
             stopped = true
-            val callback = surfaceCallback
-            surfaceCallback = null
-            if (callback != null) {
-                try { surfaceView.holder.removeCallback(callback) } catch (_: Exception) {}
-            }
+            surfaceTextureListener = null
+            try { textureView.surfaceTextureListener = null } catch (_: Exception) {}
             releasePlayer()
         }
     }
