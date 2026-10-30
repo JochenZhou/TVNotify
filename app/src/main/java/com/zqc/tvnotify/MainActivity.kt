@@ -713,6 +713,26 @@ class MainActivity : Activity() {
             openOverlaySettings()
             return
         }
+        // 视频测试走本机 /{token}/stream，必须服务在监听端口才有流可播。
+        // 手机上服务经常还没起（电视是开机自启常驻），不先拉起服务就只能看到空媒体框。
+        showTestVideoBannerWhenReady(0)
+    }
+
+    private fun showTestVideoBannerWhenReady(attempt: Int) {
+        if (!NotifyService.isServerRunning) {
+            if (attempt == 0) {
+                NotifyService.start(this)
+            }
+            if (attempt >= 20) {
+                toast(
+                    if (theme.isXianxia) "阵法未能开启，灵镜无源可循"
+                    else "服务未启动，视频流不可用"
+                )
+                return
+            }
+            mainHandler.postDelayed({ if (!isFinishing) showTestVideoBannerWhenReady(attempt + 1) }, 150L)
+            return
+        }
         val controller = bannerController ?: BannerController(this).also { bannerController = it }
         controller.show(
             BannerRequest(

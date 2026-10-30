@@ -621,8 +621,11 @@ class BannerController(private val context: Context) {
     // ------------------------------------------------------------------
 
     private fun buildMediaCard(theme: Theme, request: BannerRequest): View {
-        val mediaWidth = dp(220f)
-        val mediaHeight = dp(124f) // 16:9 ratio
+        // 媒体窗按屏宽自适应：手机竖屏下固定 220dp 会撑破横幅窗口，整块媒体区被裁掉
+        val bannerWidthPx = (context.resources.displayMetrics.widthPixels *
+                BANNER_WIDTH_RATIO_WITH_MEDIA).toInt()
+        val mediaWidth = minOf(dp(220f), (bannerWidthPx * 0.34f).toInt()).coerceAtLeast(dp(96f))
+        val mediaHeight = (mediaWidth * 9 / 16).coerceAtLeast(dp(54f))
 
         val frame = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(mediaWidth, mediaHeight).apply {
@@ -641,22 +644,45 @@ class BannerController(private val context: Context) {
                 setColor(if (theme == Theme.XIUXIAN) Color.argb(0xA0, 0x09, 0x16, 0x1A) else Color.argb(0xA0, 0x15, 0x16, 0x1A))
                 setStroke(dp(1.2f), strokeColor)
             }
-            clipToOutline = true
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, cornerRadius)
-                }
-            }
+            // 圆角裁剪交给 RoundedCornerImageView（canvas 裁剪），不用 clipToOutline：
+            // outline 在 attach 时按当时尺寸（可能还是 0×0）算一次，Android 12+ 会缓存成
+            // 空裁剪，媒体区整块不可见——电视正常、新手机上图片视频全无就是这个坑。
         }
 
-        val imageView = ImageView(context).apply {
+        val imageView = RoundedCornerImageView(context, cornerRadius).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
             scaleType = ImageView.ScaleType.CENTER_CROP
         }
+        // 占位提示：媒体卡构建成功但解码/连流失败时给用户看得见的反馈，
+        // 也便于区分「媒体卡不存在」和「媒体卡在但没内容」两种情况
+        val placeholder = TextView(context).apply {
+            text = if (theme == Theme.XIUXIAN) "灵图凝聚中…" else "正在载入…"
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextColor(Color.argb(0x99, 0xFF, 0xFF, 0xFF))
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+        frame.addView(placeholder)
         frame.addView(imageView)
+
+        val hidePlaceholder = Runnable { placeholder.visibility = View.GONE }
+        val markFailed = Runnable {
+            placeholder.text = if (theme == Theme.XIUXIAN) "灵图未显" else "图片未加载"
+            placeholder.visibility = View.VISIBLE
+        }
+        val mediaWidthActual = mediaWidth
+        Log.i(
+            TAG,
+            "媒体卡构建：${mediaWidthActual}x${mediaHeight}px video=${request.videoUrl != null} " +
+                "imgUrl=${request.imageUrl != null} b64=${request.imageBase64?.length ?: 0}"
+        )
 
         // 动态流角标
         if (!request.videoUrl.isNullOrBlank()) {
@@ -688,6 +714,7 @@ class BannerController(private val context: Context) {
                 videoUrl = request.videoUrl,
                 targetView = imageView,
                 mainHandler = mainHandler,
+                onLoaded = { mainHandler.post(hidePlaceholder) },
                 onFailure = {
                     if (!request.imageUrl.isNullOrBlank() || !request.imageBase64.isNullOrBlank()) {
                         mainHandler.post {
@@ -696,7 +723,9 @@ class BannerController(private val context: Context) {
                                     imageUrl = request.imageUrl,
                                     imageBase64 = request.imageBase64,
                                     targetView = imageView,
-                                    mainHandler = mainHandler
+                                    mainHandler = mainHandler,
+                                    onLoaded = { mainHandler.post(hidePlaceholder) },
+                                    onFailed = { mainHandler.post(markFailed) }
                                 )
                                 activeMediaSession = fallback
                                 fallback.start()
@@ -710,7 +739,9 @@ class BannerController(private val context: Context) {
                 imageUrl = request.imageUrl,
                 imageBase64 = request.imageBase64,
                 targetView = imageView,
-                mainHandler = mainHandler
+                mainHandler = mainHandler,
+                onLoaded = { mainHandler.post(hidePlaceholder) },
+                onFailed = { mainHandler.post(markFailed) }
             )
         }
 
@@ -722,16 +753,42 @@ class BannerController(private val context: Context) {
         fun stop()
     }
 
+    /**
+     * 圆角图片视图：用 canvas 裁剪代替 `clipToOutline`。
+     *
+     * 不用 clipToOutline + 自定义 ViewOutlineProvider 的原因：outline 在视图挂载时
+     * 就会按当时尺寸算一次，那时 width/height 往往还是 0×0，Android 12+ 会把空
+     * outline 缓存下来当作裁剪区域，等于把整块媒体区剪没了——电视（API 23）正常、
+     * 新手机上图片和视频都不显示就是这个原因。canvas 裁剪每次都按当前尺寸算，稳。
+     */
+    private class RoundedCornerImageView(context: Context, private val radiusPx: Float) :
+        ImageView(context) {
+        private val clipPath = Path()
+        private val clipRect = RectF()
+
+        override fun onDraw(canvas: Canvas) {
+            clipPath.reset()
+            clipRect.set(0f, 0f, width.toFloat(), height.toFloat())
+            clipPath.addRoundRect(clipRect, radiusPx, radiusPx, Path.Direction.CW)
+            val save = canvas.save()
+            canvas.clipPath(clipPath)
+            super.onDraw(canvas)
+            canvas.restoreToCount(save)
+        }
+    }
+
     private class MjpegStreamSession(
         private val videoUrl: String,
         private val targetView: ImageView,
         private val mainHandler: Handler,
+        private val onLoaded: (() -> Unit)? = null,
         private val onFailure: (() -> Unit)?
     ) : MediaSession {
         @Volatile private var isRunning = false
         private var connection: HttpURLConnection? = null
         private var inStreamRef: InputStream? = null
         private var workerThread: Thread? = null
+        private var firstFrameShown = false
 
         override fun start() {
             isRunning = true
@@ -782,6 +839,10 @@ class BannerController(private val context: Context) {
                     mainHandler.post {
                         if (isRunning) {
                             targetView.setImageBitmap(bitmap)
+                            if (!firstFrameShown) {
+                                firstFrameShown = true
+                                onLoaded?.invoke()
+                            }
                         }
                     }
                 }
@@ -809,7 +870,9 @@ class BannerController(private val context: Context) {
         private val imageUrl: String?,
         private val imageBase64: String?,
         private val targetView: ImageView,
-        private val mainHandler: Handler
+        private val mainHandler: Handler,
+        private val onLoaded: (() -> Unit)? = null,
+        private val onFailed: (() -> Unit)? = null
     ) : MediaSession {
         @Volatile private var isRunning = false
         private var connection: HttpURLConnection? = null
@@ -827,20 +890,28 @@ class BannerController(private val context: Context) {
                         downloadImageBytes(imageUrl)
                     } else null
 
-                    if (bytes != null && isRunning) {
-                        val bitmap = decodeSampledBitmap(bytes, 480, 270)
-                        if (bitmap != null && isRunning) {
-                            mainHandler.post {
-                                if (isRunning) {
-                                    targetView.alpha = 0f
-                                    targetView.setImageBitmap(bitmap)
-                                    targetView.animate().alpha(1f).setDuration(220).start()
-                                }
+                    val bitmap = if (bytes != null && bytes.isNotEmpty() && isRunning) {
+                        decodeSampledBitmap(bytes, 480, 270)
+                    } else null
+
+                    Log.i(TAG, "静态图片解码：bytes=${bytes?.size ?: 0} bitmap=${bitmap?.width}x${bitmap?.height}")
+
+                    mainHandler.post {
+                        if (isRunning) {
+                            if (bitmap != null) {
+                                // 不做淡入：曾用 alpha=0 + 动画的写法，动画一旦被打断
+                                // （视图刚挂载/被替换）图片就永久停在透明状态，直接置 1 更稳
+                                targetView.alpha = 1f
+                                targetView.setImageBitmap(bitmap)
+                                onLoaded?.invoke()
+                            } else {
+                                onFailed?.invoke()
                             }
                         }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "加载静态图片异常: ${e.message}")
+                    mainHandler.post { if (isRunning) onFailed?.invoke() }
                 }
             }, "tvnotify-img").apply {
                 isDaemon = true
