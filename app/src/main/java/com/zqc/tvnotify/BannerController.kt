@@ -136,6 +136,17 @@ class BannerController(private val context: Context) {
 
         /** 等待主线程完成「读状态 + 移除视图」的上限，超时按「无横幅」作答 */
         private const val DISMISS_WAIT_MS = 500L
+
+        /**
+         * JPEG 魔数校验。
+         *
+         * 有过两次真实事故：资源文件里存的其实是 base64 文本（ASCII `/9j/`），
+         * BitmapFactory 只会安静地返回 null，界面表现为「一片空白」——
+         * 先验魔数就能把「文件坏了」和「解码器不支持」区分开。
+         */
+        internal fun looksLikeJpeg(bytes: ByteArray): Boolean =
+            bytes.size > 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() &&
+                    bytes[2] == 0xFF.toByte()
     }
 
     private val windowManager: WindowManager =
@@ -812,10 +823,19 @@ class BannerController(private val context: Context) {
                 if (!isRunning || frames.isEmpty()) return
                 val bytes = frames[frameIndex % frames.size]
                 frameIndex++
-                val bitmap = try {
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                } catch (e: Throwable) {
-                    null
+                val bitmap = if (!looksLikeJpeg(bytes)) {
+                    // 资源损坏时给出可读原因，而不是一个空白的 null
+                    if (frameIndex == 1) {
+                        status.step = "抽帧非JPEG(${bytes.size}B ${bytes.take(3).joinToString("") { "%02x".format(it) }})"
+                        onFailed?.invoke()
+                    }
+                    return
+                } else {
+                    try {
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    } catch (e: Throwable) {
+                        null
+                    }
                 }
                 if (bitmap != null) {
                     targetView.setImageBitmap(bitmap)
@@ -1025,7 +1045,10 @@ class BannerController(private val context: Context) {
                         downloadImageBytes(imageUrl)
                     } else null
 
-                    val bitmap = if (bytes != null && bytes.isNotEmpty() && isRunning) {
+                    val bitmap = if (bytes != null && bytes.isNotEmpty() && !looksLikeJpeg(bytes)) {
+                        status.step = "非JPEG(${bytes.size}B ${bytes.take(3).joinToString("") { "%02x".format(it) }})"
+                        null
+                    } else if (bytes != null && bytes.isNotEmpty() && isRunning) {
                         status.step = "解码位图 ${bytes.size}B"
                         decodeSampledBitmap(bytes, 480, 270)
                     } else null

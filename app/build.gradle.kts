@@ -44,8 +44,8 @@ android {
         // 红米电视 Android 6.0，API 23 是硬底线；targetSdk 34 只是为了通过商店/安装器检查
         minSdk = 23
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.2.9"
+        versionCode = 14
+        versionName = "1.2.10"
         // 不引入 support 库，矢量图交给系统渲染（API 21+ 原生支持 VectorDrawable）
         vectorDrawables.useSupportLibrary = false
         // 仅保留中英文语言资源，剔除第三方库自带的多国语言包缩减体积
