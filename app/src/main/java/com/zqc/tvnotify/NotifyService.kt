@@ -34,7 +34,7 @@ class NotifyService : Service() {
         private const val NOTIFICATION_ID = 8791
 
         /** 与 app/build.gradle.kts 的 versionName 保持一致；/health 与 mDNS TXT 都用它 */
-        const val VERSION_NAME = "1.2.0"
+        const val VERSION_NAME = "1.2.1"
 
         /**
          * 供设置界面显示「是否正在监听」。

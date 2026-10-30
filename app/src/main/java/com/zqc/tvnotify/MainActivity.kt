@@ -42,14 +42,22 @@ import com.google.zxing.qrcode.QRCodeWriter
  *    在 1080p 电视大屏上免上下滚动，一览无余；
  * 2. 遥控器友好交互：遥控器方向键（D-Pad）在各卡片与按钮间平滑流转，
  *    聚焦时触发细腻的灵光微缩放与高亮描边；
- * 3. 仙侠玉简美学浸润：支持「修仙玉简」与「现代深色」一键双向平滑切换。
+ * 3. 仙侠玉简美学浸润：支持「修仙玉简」与「现代深色」一键双向平滑切换；
+ * 4. Home Assistant 极速互联：支持双模式二维码切换（HA 自动发现集成仓库 vs 原生 HTTP 符钥），
+ *    明确告知安装 ha-tvnotify 后局域网自动发现，免配 IP 与 Token。
  */
 class MainActivity : Activity() {
+
+    enum class QrTab {
+        HA_INTEGRATION,
+        TOKEN_URL
+    }
 
     companion object {
         private const val TAG = "TVNotifyMain"
         private const val REQUEST_CODE_NOTIFICATION = 1001
-        private const val QR_PIXEL_SIZE = 240
+        private const val QR_PIXEL_SIZE = 220
+        const val HA_INTEGRATION_URL = "https://github.com/JochenZhou/ha-tvnotify"
 
         private val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
         private val WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -61,6 +69,9 @@ class MainActivity : Activity() {
     private lateinit var qrImage: ImageView
     private lateinit var qrTitleView: TextView
     private lateinit var qrSubtitleView: TextView
+    private lateinit var qrCaptionView: TextView
+    private lateinit var haTabButton: Button
+    private lateinit var tokenTabButton: Button
     private lateinit var testButton: Button
     private lateinit var copyButton: Button
     private lateinit var resetButton: Button
@@ -76,6 +87,8 @@ class MainActivity : Activity() {
     private var currentUrl: String = ""
     private var cachedIp: String = "127.0.0.1"
     private var theme: Theme = Theme.XIUXIAN
+    private var activeQrTab: QrTab = QrTab.HA_INTEGRATION
+    private var currentlyRenderedContent: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -121,7 +134,7 @@ class MainActivity : Activity() {
         // 外层垂直容器
         val rootColumn = LinearLayout(this)
         rootColumn.orientation = LinearLayout.VERTICAL
-        rootColumn.setPadding(dp(48), dp(32), dp(48), dp(32))
+        rootColumn.setPadding(dp(44), dp(28), dp(44), dp(28))
         rootColumn.isFocusable = false
         scroll.addView(rootColumn, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
@@ -129,7 +142,7 @@ class MainActivity : Activity() {
         val headerRow = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        titleView = makeText(theme.appTitle, 32f, Color.WHITE, true)
+        titleView = makeText(theme.appTitle, 30f, Color.WHITE, true)
         if (theme == Theme.XIUXIAN) {
             titleView.typeface = Typeface.SERIF
             titleView.setShadowLayer(10f, 0f, 1f, Color.argb(0x80, 0x36, 0xD1, 0xA8))
@@ -137,7 +150,7 @@ class MainActivity : Activity() {
         headerRow.addView(titleView)
 
         subtitleView = makeText(theme.appSubtitle, 14f, theme.hintColor, false).apply {
-            setPadding(0, dp(4), 0, dp(18))
+            setPadding(0, dp(4), 0, dp(14))
         }
         headerRow.addView(subtitleView)
         rootColumn.addView(headerRow)
@@ -163,7 +176,7 @@ class MainActivity : Activity() {
             }
         }
         statusValue = makeText("", 15f, Color.WHITE, false).apply {
-            setLineSpacing(dp(6).toFloat(), 1f)
+            setLineSpacing(dp(5).toFloat(), 1f)
         }
         statusCard.addView(statusValue)
         leftColumn.addView(statusCard)
@@ -173,14 +186,14 @@ class MainActivity : Activity() {
         callInfoTitleView = makeText(theme.callInfoTitle, 13f, theme.hintColor, false)
         urlCard.addView(callInfoTitleView)
         tokenValue = makeText("", 16f, Color.WHITE, true).apply {
-            setPadding(0, dp(6), 0, dp(2))
+            setPadding(0, dp(5), 0, dp(2))
         }
-        urlValue = makeText("", 15f, theme.accentColor, false).apply {
+        urlValue = makeText("", 14f, theme.accentColor, false).apply {
             setPadding(0, dp(2), 0, dp(4))
         }
         urlCard.addView(tokenValue)
         urlCard.addView(urlValue)
-        leftColumn.addView(urlCard, linearParams(topMargin = dp(14)))
+        leftColumn.addView(urlCard, linearParams(topMargin = dp(12)))
 
         // 2x2 按钮网格
         val buttonRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -188,7 +201,7 @@ class MainActivity : Activity() {
         copyButton = buildButton(theme.copyButtonText) { copyCallUrl() }
         buttonRow1.addView(testButton, weightedParams(0))
         buttonRow1.addView(copyButton, weightedParams(1))
-        leftColumn.addView(buttonRow1, linearParams(topMargin = dp(16)))
+        leftColumn.addView(buttonRow1, linearParams(topMargin = dp(14)))
 
         val buttonRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         resetButton = buildButton(theme.resetButtonText) { resetToken() }
@@ -198,11 +211,11 @@ class MainActivity : Activity() {
         leftColumn.addView(buttonRow2, linearParams(topMargin = dp(10)))
 
         val leftParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.25f).apply {
-            rightMargin = dp(24)
+            rightMargin = dp(22)
         }
         mainRow.addView(leftColumn, leftParams)
 
-        // === 右栏 (互联卡片：二维码 + 运维命令辅助箱) ===
+        // === 右栏 (互联卡片：二维码切换 + HA 自动发现引导 + 运维命令) ===
         val rightColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isFocusable = false
@@ -211,20 +224,43 @@ class MainActivity : Activity() {
         val qrCard = makeCard().apply {
             gravity = Gravity.CENTER_HORIZONTAL
         }
-        qrTitleView = makeText(theme.qrTitle, 15f, Color.WHITE, true).apply {
+
+        // 选项卡切换栏：HA 专属集成 vs 本机 HTTP 符钥
+        val tabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(0, 0, 0, dp(10))
+        }
+        haTabButton = buildTabButton("🌟 HA 自动发现集成", activeQrTab == QrTab.HA_INTEGRATION) {
+            if (activeQrTab != QrTab.HA_INTEGRATION) {
+                activeQrTab = QrTab.HA_INTEGRATION
+                refreshQrDisplay()
+            }
+        }
+        tokenTabButton = buildTabButton("🔗 本机调用符钥", activeQrTab == QrTab.TOKEN_URL) {
+            if (activeQrTab != QrTab.TOKEN_URL) {
+                activeQrTab = QrTab.TOKEN_URL
+                refreshQrDisplay()
+            }
+        }
+        tabRow.addView(haTabButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { rightMargin = dp(8) })
+        tabRow.addView(tokenTabButton, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
+        qrCard.addView(tabRow)
+
+        qrTitleView = makeText("", 15f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setPadding(0, 0, 0, dp(4))
         }
-        qrSubtitleView = makeText(theme.qrSubtitle, 12f, theme.hintColor, false).apply {
+        qrSubtitleView = makeText("", 12f, theme.hintColor, false).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, 0, 0, dp(12))
+            setPadding(dp(12), 0, dp(12), dp(10))
         }
         qrCard.addView(qrTitleView)
         qrCard.addView(qrSubtitleView)
 
         // 二维码白底容器
         val qrBox = LinearLayout(this).apply {
-            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
             background = roundedRect(dp(12).toFloat(), Color.WHITE, 0, Color.TRANSPARENT)
             gravity = Gravity.CENTER
         }
@@ -236,17 +272,24 @@ class MainActivity : Activity() {
         qrBox.addView(qrImage, LinearLayout.LayoutParams(dp(QR_PIXEL_SIZE), dp(QR_PIXEL_SIZE)))
         qrCard.addView(qrBox)
 
+        qrCaptionView = makeText("", 11f, theme.accentColor, false).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(10), dp(8), dp(10), 0)
+            setOnClickListener { copyActiveQrUrl() }
+        }
+        qrCard.addView(qrCaptionView)
+
         rightColumn.addView(qrCard)
 
         // 底部运维提示箱
         val helperCard = makeCard().apply {
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(dp(16), dp(10), dp(16), dp(10))
         }
         footerView = makeText(theme.footerHint, 12f, theme.hintColor, false).apply {
             setLineSpacing(dp(3).toFloat(), 1f)
         }
         helperCard.addView(footerView)
-        rightColumn.addView(helperCard, linearParams(topMargin = dp(14)))
+        rightColumn.addView(helperCard, linearParams(topMargin = dp(12)))
 
         val rightParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.95f)
         mainRow.addView(rightColumn, rightParams)
@@ -258,7 +301,7 @@ class MainActivity : Activity() {
     private fun makeCard(): LinearLayout {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
-        card.setPadding(dp(20), dp(14), dp(20), dp(14))
+        card.setPadding(dp(18), dp(14), dp(18), dp(14))
         card.background = roundedRect(dp(14).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
         return card
     }
@@ -271,6 +314,42 @@ class MainActivity : Activity() {
         view.typeface = if (bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         view.includeFontPadding = false
         return view
+    }
+
+    private fun buildTabButton(label: String, isSelected: Boolean, onClick: () -> Unit): Button {
+        val button = Button(this)
+        button.text = label
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        button.typeface = Typeface.DEFAULT_BOLD
+        button.setPadding(dp(12), dp(6), dp(12), dp(6))
+        button.isFocusable = true
+        button.isFocusableInTouchMode = false
+        button.stateListAnimator = null
+
+        val bgNormal = if (isSelected) theme.accentColor else theme.buttonBg
+        val textNormal = if (isSelected) Color.WHITE else theme.hintColor
+        button.setTextColor(textNormal)
+
+        val states = StateListDrawable()
+        states.addState(
+            intArrayOf(android.R.attr.state_focused),
+            roundedRect(dp(8).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+        )
+        states.addState(
+            intArrayOf(),
+            roundedRect(dp(8).toFloat(), bgNormal, dp(1), theme.buttonStroke)
+        )
+        button.background = states
+
+        button.setOnFocusChangeListener { v, hasFocus ->
+            if (hasFocus) {
+                v.animate().scaleX(1.05f).scaleY(1.05f).setDuration(120).start()
+            } else {
+                v.animate().scaleX(1.0f).scaleY(1.0f).setDuration(120).start()
+            }
+        }
+        button.setOnClickListener { onClick() }
+        return button
     }
 
     /**
@@ -304,7 +383,6 @@ class MainActivity : Activity() {
         button.isFocusableInTouchMode = false
         button.stateListAnimator = null
 
-        // 遥控器大屏悬浮动效
         button.setOnFocusChangeListener { v, hasFocus ->
             if (hasFocus) {
                 v.animate().scaleX(1.04f).scaleY(1.04f).setDuration(140).start()
@@ -384,24 +462,73 @@ class MainActivity : Activity() {
         tokenValue.text = theme.tokenLabel(token)
         urlValue.text = currentUrl
 
-        if (ipUsable) {
-            renderQrCode(currentUrl)
+        refreshQrDisplay()
+    }
+
+    private fun refreshQrDisplay() {
+        val isHa = activeQrTab == QrTab.HA_INTEGRATION
+        val content = if (isHa) HA_INTEGRATION_URL else currentUrl
+
+        qrTitleView.text = if (isHa) {
+            "🌟 Home Assistant 专属集成"
+        } else {
+            if (theme.isXianxia) "传音玉简 · 符钥" else "本机调用地址"
+        }
+
+        qrSubtitleView.text = if (isHa) {
+            "在 HA 安装 ha-tvnotify 集成后，局域网 mDNS 自动发现此电视，免配 IP 与 Token！"
+        } else {
+            "供 cURL、外部脚本或自动化系统通过 HTTP POST 直接调用的完整接口"
+        }
+
+        qrCaptionView.text = if (isHa) {
+            "$HA_INTEGRATION_URL\n（扫码直达 GitHub 仓库 · 点此复制链接）"
+        } else {
+            "$currentUrl\n（点此复制完整接口地址）"
+        }
+
+        updateTabButtonStyles()
+
+        if (content.isNotEmpty()) {
+            renderQrCode(content)
         } else {
             qrImage.setImageDrawable(null)
         }
     }
 
+    private fun updateTabButtonStyles() {
+        val isHa = activeQrTab == QrTab.HA_INTEGRATION
+        haTabButton.setTextColor(if (isHa) Color.WHITE else theme.hintColor)
+        tokenTabButton.setTextColor(if (!isHa) Color.WHITE else theme.hintColor)
+
+        haTabButton.background = createTabStateDrawable(isHa)
+        tokenTabButton.background = createTabStateDrawable(!isHa)
+    }
+
+    private fun createTabStateDrawable(isSelected: Boolean): StateListDrawable {
+        val bgNormal = if (isSelected) theme.accentColor else theme.buttonBg
+        val states = StateListDrawable()
+        states.addState(
+            intArrayOf(android.R.attr.state_focused),
+            roundedRect(dp(8).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+        )
+        states.addState(
+            intArrayOf(),
+            roundedRect(dp(8).toFloat(), bgNormal, dp(1), theme.buttonStroke)
+        )
+        return states
+    }
+
     private fun renderQrCode(content: String) {
+        if (content == currentlyRenderedContent && qrImage.drawable != null) {
+            return
+        }
         Thread({
             val bitmap = createQrBitmap(content, QR_PIXEL_SIZE)
             mainHandler.post {
-                if (isFinishing || isDestroyed) {
-                    return@post
-                }
-                if (content != currentUrl) {
-                    return@post
-                }
+                if (isFinishing || isDestroyed) return@post
                 if (bitmap != null) {
+                    currentlyRenderedContent = content
                     qrImage.setImageBitmap(bitmap)
                 } else {
                     qrImage.setImageDrawable(null)
@@ -462,6 +589,19 @@ class MainActivity : Activity() {
         val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         manager.setPrimaryClip(ClipData.newPlainText(theme.clipLabel, currentUrl))
         toast(theme.copiedToast(currentUrl))
+    }
+
+    private fun copyActiveQrUrl() {
+        val isHa = activeQrTab == QrTab.HA_INTEGRATION
+        val (label, url) = if (isHa) {
+            "ha-tvnotify 集成仓库" to HA_INTEGRATION_URL
+        } else {
+            theme.clipLabel to currentUrl
+        }
+        if (url.isEmpty()) return
+        val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        manager.setPrimaryClip(ClipData.newPlainText(label, url))
+        toast(if (theme.isXianxia) "法诀已录入剪贴：$url" else "已复制：$url")
     }
 
     private fun resetToken() {

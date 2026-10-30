@@ -44,10 +44,23 @@ android {
         // 红米电视 Android 6.0，API 23 是硬底线；targetSdk 34 只是为了通过商店/安装器检查
         minSdk = 23
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.2.0"
+        versionCode = 5
+        versionName = "1.2.1"
         // 不引入 support 库，矢量图交给系统渲染（API 21+ 原生支持 VectorDrawable）
         vectorDrawables.useSupportLibrary = false
+        // 仅保留中英文语言资源，剔除第三方库自带的多国语言包缩减体积
+        resourceConfigurations += listOf("zh", "en")
+    }
+
+    packaging {
+        resources {
+            excludes += listOf(
+                "META-INF/*.version",
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE*",
+                "META-INF/NOTICE*"
+            )
+        }
     }
 
     // signingConfig 必须在 buildTypes 之前声明，release 内部才能按名称取到

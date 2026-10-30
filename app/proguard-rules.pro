@@ -5,10 +5,12 @@
 -keep class fi.iki.elonen.**$* { *; }
 -dontwarn fi.iki.elonen.**
 
-# ZXing：QRCodeWriter 依赖 EncodeHintType 枚举与 renderer 的反射式查找
--keep class com.google.zxing.** { *; }
--keepclassmembers class com.google.zxing.** { *; }
--keep class com.google.zxing.**$* { *; }
+# ZXing：仅使用 QRCodeWriter 生成二维码，精准裁剪未使用的 Aztec / PDF417 / DataMatrix / 1D 条码等冗余包（立省数百 KB）
+-keep class com.google.zxing.qrcode.** { *; }
+-keep class com.google.zxing.common.** { *; }
+-keep class com.google.zxing.BarcodeFormat { *; }
+-keep class com.google.zxing.EncodeHintType { *; }
+-keep class com.google.zxing.WriterException { *; }
 -dontwarn com.google.zxing.**
 
 # 保留必要的元信息，避免泛型 / 枚举 / 内部类在优化阶段被破坏

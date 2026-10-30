@@ -6,6 +6,18 @@
 
 ---
 
+## 🌟 Home Assistant 专属集成（推荐 · 自动发现）
+
+强烈推荐配合专属 Home Assistant 自定义集成使用：
+
+👉 **集成仓库**：[ha-tvnotify (GitHub)](https://github.com/JochenZhou/ha-tvnotify)
+
+- **局域网 mDNS 自动发现**：TVNotify 电视端开机后自动广播 `_tvnotify._tcp`。安装 `ha-tvnotify` 后，Home Assistant「配置 → 设备与服务」将**自动发现**局域网内的这台电视，点击「配置」即可自动绑定，**无需手动查询与填写电视 IP 及 Token**！
+- **原生通知实体与服务**：在 HA 自动化中通过 `notify.send_message` 或 `notify.tv_notify` 直接调用，支持标题、正文、分级着色（info / warn / error）、常驻与自定义提示音。
+- **在线状态感知**：自动监控电视端 HTTP 与悬浮窗服务在线状态。
+
+---
+
 ## 效果预览
 
 真实电视截图（小米电视 1920×1080，Android 6.0）：

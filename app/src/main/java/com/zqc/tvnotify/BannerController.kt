@@ -434,16 +434,12 @@ class BannerController(private val context: Context) {
         }
         container.background = buildBannerBackground(theme, request.level)
 
-        // 左侧图标：修仙玉简主题用带共鸣声波的 JadeSlipIconView；默认主题用 BellIconView
-        val iconSize = dp(if (theme == Theme.XIUXIAN) 38f else 28f)
+        // 传音玉简法宝图标：修仙与深色两套主题统一采用专属玉简灵力声波图标
+        val iconSize = dp(if (theme == Theme.XIUXIAN) 38f else 32f)
         val iconParams = LinearLayout.LayoutParams(iconSize, iconSize)
         iconParams.gravity = Gravity.CENTER_VERTICAL
         iconParams.setMargins(0, 0, dp(16f), 0)
-        if (theme == Theme.XIUXIAN) {
-            container.addView(JadeSlipIconView(context, theme.bannerIconColor(request.level)), iconParams)
-        } else {
-            container.addView(BellIconView(context, theme.bannerIconColor(request.level)), iconParams)
-        }
+        container.addView(JadeSlipIconView(context, theme.bannerIconColor(request.level)), iconParams)
 
         val column = LinearLayout(context)
         column.orientation = LinearLayout.VERTICAL
@@ -721,39 +717,6 @@ class BannerController(private val context: Context) {
             val lineY2 = cy + jadeH * 0.22f
             canvas.drawLine(cx - jadeW * 0.24f, lineY1, cx + jadeW * 0.24f, lineY1, runePaint)
             canvas.drawLine(cx - jadeW * 0.18f, lineY2, cx + jadeW * 0.18f, lineY2, runePaint)
-        }
-    }
-
-    /**
-     * 手绘铃铛图标（默认主题保留）
-     */
-    private class BellIconView(context: Context, color: Int) : View(context) {
-
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = color
-            style = Paint.Style.FILL
-        }
-
-        private val path = Path()
-
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val w = width.toFloat()
-            val h = height.toFloat()
-            if (w <= 0f || h <= 0f) return
-
-            path.reset()
-            path.moveTo(w * 0.50f, h * 0.08f)
-            path.cubicTo(w * 0.28f, h * 0.08f, w * 0.22f, h * 0.38f, w * 0.22f, h * 0.52f)
-            path.cubicTo(w * 0.22f, h * 0.62f, w * 0.16f, h * 0.66f, w * 0.10f, h * 0.70f)
-            path.lineTo(w * 0.90f, h * 0.70f)
-            path.cubicTo(w * 0.84f, h * 0.66f, w * 0.78f, h * 0.62f, w * 0.78f, h * 0.52f)
-            path.cubicTo(w * 0.78f, h * 0.38f, w * 0.72f, h * 0.08f, w * 0.50f, h * 0.08f)
-            path.close()
-            canvas.drawPath(path, paint)
-
-            canvas.drawRect(w * 0.08f, h * 0.74f, w * 0.92f, h * 0.82f, paint)
-            canvas.drawCircle(w * 0.50f, h * 0.90f, w * 0.09f, paint)
         }
     }
 }
