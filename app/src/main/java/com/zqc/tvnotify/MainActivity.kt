@@ -57,7 +57,7 @@ class MainActivity : Activity() {
         private const val TAG = "TVNotifyMain"
         private const val REQUEST_CODE_NOTIFICATION = 1001
         private const val QR_PIXEL_SIZE = 220
-        const val HA_INTEGRATION_URL = "https://github.com/JochenZhou/ha-tvnotify"
+        const val HA_INTEGRATION_URL = "https://github.com/JochenZhou/ha-yujian"
 
         // 16:9 示例测试画卷（纯原生 JPEG Base64，供长按「试传一简」测试多媒体横幅）
         private const val SAMPLE_TEST_IMAGE_BASE64 =
@@ -539,7 +539,7 @@ class MainActivity : Activity() {
         }
 
         qrSubtitleView.text = if (isHa) {
-            "在 HA 安装 ha-tvnotify 集成后，局域网 mDNS 自动发现此电视，免配 IP 与 Token！"
+            "在 HA 安装 ha-yujian 集成后，局域网 mDNS 自动发现此电视，免配 IP 与 Token！"
         } else {
             "供 cURL、外部脚本或自动化系统通过 HTTP POST 直接调用的完整接口"
         }
@@ -676,7 +676,7 @@ class MainActivity : Activity() {
     private fun copyActiveQrUrl() {
         val isHa = activeQrTab == QrTab.HA_INTEGRATION
         val (label, url) = if (isHa) {
-            "ha-tvnotify 集成仓库" to HA_INTEGRATION_URL
+            "ha-yujian 集成仓库" to HA_INTEGRATION_URL
         } else {
             theme.clipLabel to currentUrl
         }
