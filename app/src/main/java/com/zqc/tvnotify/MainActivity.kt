@@ -415,8 +415,8 @@ class MainActivity : Activity() {
      */
     private fun buildButton(
         label: String,
-        onClick: () -> Unit,
-        onLongClick: (() -> Boolean)? = null
+        onLongClick: (() -> Boolean)? = null,
+        onClick: () -> Unit
     ): Button {
         val states = StateListDrawable()
         states.addState(
