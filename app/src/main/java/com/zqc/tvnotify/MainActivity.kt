@@ -66,14 +66,23 @@ class MainActivity : Activity() {
     private lateinit var urlValue: TextView
     private lateinit var qrImage: ImageView
     private lateinit var testButton: Button
+    private lateinit var copyButton: Button
+    private lateinit var resetButton: Button
+    private lateinit var titleView: TextView
+    private lateinit var subtitleView: TextView
+    private lateinit var callInfoTitleView: TextView
+    private lateinit var footerView: TextView
+    private lateinit var themeButton: Button
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var bannerController: BannerController? = null
     private var currentUrl: String = ""
+    private var theme: Theme = Theme.DEFAULT
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        theme = Theme.current(this)
         bannerController = BannerController(this)
         setContentView(buildRootView())
         requestNotificationPermissionIfNeeded()
@@ -123,12 +132,15 @@ class MainActivity : Activity() {
         // 也不能退化成 ViewGroup.LayoutParams：FrameLayout.onMeasure 会强转成自己的 LayoutParams，运行期崩溃。
         scroll.addView(column, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        column.addView(makeText("TVNotify", 34f, Color.WHITE, true))
-        column.addView(
-            makeText("局域网通知横幅 · 电视端常驻服务", 15f, HINT_COLOR, false).apply {
-                setPadding(0, dp(6), 0, dp(22))
-            }
-        )
+        titleView = makeText(theme.appTitle, 34f, Color.WHITE, true)
+        if (theme == Theme.XIUXIAN) {
+            titleView.typeface = Typeface.SERIF
+        }
+        column.addView(titleView)
+        subtitleView = makeText(theme.appSubtitle, 15f, HINT_COLOR, false).apply {
+            setPadding(0, dp(6), 0, dp(22))
+        }
+        column.addView(subtitleView)
 
         val infoCard = makeCard()
         statusValue = makeText("", 16f, Color.WHITE, false)
@@ -137,7 +149,8 @@ class MainActivity : Activity() {
         column.addView(infoCard, linearParams(topMargin = 0))
 
         val urlCard = makeCard()
-        urlCard.addView(makeText("本机调用信息", 14f, HINT_COLOR, false))
+        callInfoTitleView = makeText(theme.callInfoTitle, 14f, HINT_COLOR, false)
+        urlCard.addView(callInfoTitleView)
         tokenValue = makeText("", 16f, Color.WHITE, true).apply {
             setPadding(0, dp(8), 0, dp(2))
         }
@@ -162,23 +175,35 @@ class MainActivity : Activity() {
 
         val buttonRow = LinearLayout(this)
         buttonRow.orientation = LinearLayout.HORIZONTAL
-        testButton = buildButton("测试通知") { showTestBanner() }
-        val copyButton = buildButton("复制调用地址") { copyCallUrl() }
-        val resetButton = buildButton("重置 Token") { resetToken() }
+        testButton = buildButton(theme.testButtonText) { showTestBanner() }
+        copyButton = buildButton(theme.copyButtonText) { copyCallUrl() }
+        resetButton = buildButton(theme.resetButtonText) { resetToken() }
         buttonRow.addView(testButton, weightedParams(0))
         buttonRow.addView(copyButton, weightedParams(1))
         buttonRow.addView(resetButton, weightedParams(2))
         column.addView(buttonRow, linearParams(topMargin = dp(24)))
 
-        column.addView(
-            makeText(
-                "提示：电视重启后服务会自动拉起；若被系统清理，可在电脑上执行\n" +
-                        "adb shell am startservice -n com.zqc.tvnotify/.NotifyService",
-                13f,
-                HINT_COLOR,
-                false
-            ).apply { setPadding(0, dp(22), 0, 0) }
+        val themeRow = LinearLayout(this)
+        themeRow.orientation = LinearLayout.HORIZONTAL
+        themeRow.gravity = Gravity.CENTER_VERTICAL
+        themeButton = buildButton(themeToggleLabel()) { toggleTheme() }
+        themeRow.addView(
+            makeText("界面主题", 14f, HINT_COLOR, false).apply {
+                setPadding(0, 0, dp(14), 0)
+                gravity = Gravity.CENTER_VERTICAL
+            },
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
         )
+        themeRow.addView(
+            themeButton,
+            LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+        )
+        column.addView(themeRow, linearParams(topMargin = dp(18)))
+
+        footerView = makeText(theme.footerHint, 13f, HINT_COLOR, false).apply {
+            setPadding(0, dp(22), 0, 0)
+        }
+        column.addView(footerView)
 
         return scroll
     }
@@ -269,17 +294,16 @@ class MainActivity : Activity() {
         val ipUsable = NetUtils.hasUsableIp(ip)
 
         statusValue.text = buildString {
-            append("服务状态：").append(if (running) "运行中" else "未运行（已尝试启动，请检查自启动权限）")
+            append(theme.statusLine(running))
             append('\n')
-            append("监听端口：").append(NotifyService.PORT)
-            append(if (running) "（监听中）" else "（等待监听）")
+            append(theme.portLine(NotifyService.PORT, running))
             append('\n')
-            append("悬浮窗权限：").append(if (overlayGranted) "已授予" else "未授予（横幅无法显示，请点「测试通知」授权）")
+            append(theme.overlayLine(overlayGranted))
             append('\n')
-            append("本机 IPv4：").append(if (ipUsable) ip else "未获取到局域网地址，请检查 Wi-Fi 连接")
+            append(theme.ipLine(ip, ipUsable))
         }
 
-        tokenValue.text = "Token：$token"
+        tokenValue.text = theme.tokenLabel(token)
         urlValue.text = currentUrl
 
         if (ipUsable) {
@@ -339,7 +363,7 @@ class MainActivity : Activity() {
 
     private fun showTestBanner() {
         if (!Settings.canDrawOverlays(this)) {
-            toast("请先允许「显示在其他应用上层」权限")
+            toast(theme.overlayPermissionToast)
             openOverlaySettings()
             return
         }
@@ -347,8 +371,8 @@ class MainActivity : Activity() {
         // 走和 HTTP 推送完全相同的数据类，顺带验证提示音资源 R.raw.chord 是否可用
         controller.show(
             BannerRequest(
-                title = "演示通知",
-                text = "这是一条来自 TVNotify 的测试横幅，Home Assistant 也可以这样推送。",
+                title = theme.testBannerTitle,
+                text = theme.testBannerText,
                 durationSeconds = 4
             )
         )
@@ -356,19 +380,34 @@ class MainActivity : Activity() {
 
     private fun copyCallUrl() {
         if (currentUrl.isEmpty()) {
-            toast("地址尚未就绪")
+            toast(theme.urlNotReadyToast)
             return
         }
         val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        manager.setPrimaryClip(ClipData.newPlainText("TVNotify 调用地址", currentUrl))
-        toast("已复制：$currentUrl")
+        manager.setPrimaryClip(ClipData.newPlainText(theme.clipLabel, currentUrl))
+        toast(theme.copiedToast(currentUrl))
     }
 
     private fun resetToken() {
         // 服务端每次请求都会重新读取 SharedPreferences，所以这里无需重启服务
         val token = Prefs.resetToken(this)
         refreshUi()
-        toast("Token 已重置：$token")
+        toast(theme.tokenResetToast(token))
+    }
+
+    /** 按钮文案显示「将切换到」的主题名，按下即切换并整页重绘。 */
+    private fun themeToggleLabel(): String = when (theme) {
+        Theme.DEFAULT -> "切换：修仙主题"
+        Theme.XIUXIAN -> "切换：默认主题"
+    }
+
+    private fun toggleTheme() {
+        theme = if (theme == Theme.XIUXIAN) Theme.DEFAULT else Theme.XIUXIAN
+        Theme.save(this, theme)
+        // 界面是 buildRootView 一次性搭出来的，直接整页重建最省事且不会留旧文案
+        setContentView(buildRootView())
+        refreshUi()
+        testButton.requestFocus()
     }
 
     private fun openOverlaySettings() {
@@ -380,7 +419,7 @@ class MainActivity : Activity() {
             startActivity(intent)
         } catch (e: Exception) {
             Log.w(TAG, "无法打开悬浮窗授权页", e)
-            toast("请在系统设置中手动允许「显示在其他应用上层」")
+            toast(theme.overlayPermissionFallbackToast)
         }
     }
 

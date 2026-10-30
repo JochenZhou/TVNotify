@@ -6,6 +6,7 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
@@ -110,21 +111,6 @@ class BannerController(private val context: Context) {
 
         /** 等待主线程完成「读状态 + 移除视图」的上限，超时按「无横幅」作答 */
         private const val DISMISS_WAIT_MS = 500L
-
-        private val BACKGROUND_COLOR = Color.argb(0xD9, 0x1C, 0x1C, 0x1E)
-        private val BODY_COLOR = Color.argb(0xFF, 0xEB, 0xEB, 0xF5)
-
-        // info：保持 v1.0.0 的白铃铛 + 1dp 淡白描边
-        private val ICON_INFO = Color.argb(0xFF, 0xFF, 0xFF, 0xFF)
-        private val STROKE_INFO = Color.argb(0x33, 0xFF, 0xFF, 0xFF)
-
-        // warn：琥珀
-        private val ICON_WARN = Color.rgb(0xFF, 0xB0, 0x20)
-        private val STROKE_WARN = Color.argb(0x66, 0xFF, 0xB0, 0x20)
-
-        // error：红
-        private val ICON_ERROR = Color.rgb(0xFF, 0x45, 0x3A)
-        private val STROKE_ERROR = Color.argb(0x66, 0xFF, 0x45, 0x3A)
     }
 
     private val windowManager: WindowManager =
@@ -442,32 +428,43 @@ class BannerController(private val context: Context) {
     private fun buildBannerView(request: BannerRequest): View {
         val trimmedTitle = request.title.trim()
         val trimmedText = request.text.trim()
+        val theme = Theme.current(context)
 
+        // 玉简主题下横幅本体是一块「竖置玉简」：外层容器留出简牍上下留白，
+        // 内层才是内容；默认主题维持原横条卡片。
         val container = LinearLayout(context)
         container.orientation = LinearLayout.HORIZONTAL
         container.gravity = Gravity.CENTER_VERTICAL
-        container.setPadding(dp(18f), dp(14f), dp(18f), dp(14f))
-        container.background = buildBackground(strokeColorFor(request.level))
+        if (theme == Theme.XIUXIAN) {
+            container.setPadding(dp(22f), dp(18f), dp(22f), dp(20f))
+        } else {
+            container.setPadding(dp(18f), dp(14f), dp(18f), dp(14f))
+        }
+        container.background = buildBannerBackground(theme, request.level)
 
-        val iconSize = dp(26f)
-        val icon = BellIconView(context, iconColorFor(request.level))
+        val iconSize = dp(if (theme == Theme.XIUXIAN) 30f else 26f)
         val iconParams = LinearLayout.LayoutParams(iconSize, iconSize)
         iconParams.gravity = Gravity.CENTER_VERTICAL
         iconParams.setMargins(0, 0, dp(14f), 0)
-        container.addView(icon, iconParams)
+        if (theme == Theme.XIUXIAN) {
+            // 玉简投影用卷轴/传音符样式图标，默认主题维持铃铛
+            container.addView(ScrollIconView(context, theme.bannerIconColor(request.level)), iconParams)
+        } else {
+            container.addView(BellIconView(context, theme.bannerIconColor(request.level)), iconParams)
+        }
 
         val column = LinearLayout(context)
         column.orientation = LinearLayout.VERTICAL
 
         if (trimmedTitle.isNotEmpty()) {
-            column.addView(buildTitleView(trimmedTitle))
+            column.addView(buildTitleView(trimmedTitle, theme))
         }
         if (trimmedText.isNotEmpty()) {
-            column.addView(buildBodyView(trimmedText))
+            column.addView(buildBodyView(trimmedText, theme))
         }
         if (column.childCount == 0) {
             // 理论上 HTTP 层已拒绝空内容，这里只兜底「测试入口只传了空格」的情况
-            column.addView(buildBodyView("（空通知）"))
+            column.addView(buildBodyView("（空通知）", theme))
         }
 
         val columnParams = LinearLayout.LayoutParams(
@@ -479,12 +476,30 @@ class BannerController(private val context: Context) {
         return container
     }
 
-    private fun buildTitleView(title: String): TextView {
+    /**
+     * 横幅底色：默认主题 = tvOS 深色半透明圆角卡；
+     * 修仙主题 = 玉简投影——深青玉底 + 玉青描边 + 更大圆角（简牍感）。
+     */
+    private fun buildBannerBackground(theme: Theme, level: BannerLevel): GradientDrawable {
+        val drawable = GradientDrawable()
+        drawable.shape = GradientDrawable.RECTANGLE
+        drawable.cornerRadius = dp(if (theme == Theme.XIUXIAN) 20f else 16f).toFloat()
+        drawable.setColor(theme.bannerBackground)
+        drawable.setStroke(dp(if (theme == Theme.XIUXIAN) 2f else 1f), theme.bannerStrokeColor(level))
+        return drawable
+    }
+
+    private fun buildTitleView(title: String, theme: Theme): TextView {
         val view = TextView(context)
         view.text = title
-        view.setTextColor(Color.WHITE)
+        view.setTextColor(theme.bannerTitle)
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-        view.typeface = android.graphics.Typeface.DEFAULT_BOLD
+        view.typeface = if (theme.bannerTitleSerif) {
+            // 衬线（宋体类）模拟简牍刻字；SERIF 在 Android 6 上必然存在（Noto Serif CJK 随系统附带）
+            Typeface.SERIF
+        } else {
+            Typeface.DEFAULT_BOLD
+        }
         // 标题保持单行：标题一换行，正文的可读高度就被挤压
         view.isSingleLine = true
         view.ellipsize = TextUtils.TruncateAt.END
@@ -492,10 +507,13 @@ class BannerController(private val context: Context) {
         return view
     }
 
-    private fun buildBodyView(text: String): TextView {
+    private fun buildBodyView(text: String, theme: Theme): TextView {
         val view = TextView(context)
         view.text = text
-        view.setTextColor(BODY_COLOR)
+        view.setTextColor(theme.bannerBodyText)
+        if (theme == Theme.XIUXIAN) {
+            view.typeface = Typeface.SERIF
+        }
         view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         // 4 行：天气预警这类长句 2 行根本放不下（用户实测被截断），
         // 卡片高度由 WRAP_CONTENT 自适应，不写死高度
@@ -504,27 +522,6 @@ class BannerController(private val context: Context) {
         view.includeFontPadding = false
         view.setPadding(0, dp(3f), 0, 0)
         return view
-    }
-
-    private fun buildBackground(strokeColor: Int): GradientDrawable {
-        val drawable = GradientDrawable()
-        drawable.shape = GradientDrawable.RECTANGLE
-        drawable.cornerRadius = dp(16f).toFloat()
-        drawable.setColor(BACKGROUND_COLOR)
-        drawable.setStroke(dp(1f), strokeColor)
-        return drawable
-    }
-
-    private fun iconColorFor(level: BannerLevel): Int = when (level) {
-        BannerLevel.INFO -> ICON_INFO
-        BannerLevel.WARN -> ICON_WARN
-        BannerLevel.ERROR -> ICON_ERROR
-    }
-
-    private fun strokeColorFor(level: BannerLevel): Int = when (level) {
-        BannerLevel.INFO -> STROKE_INFO
-        BannerLevel.WARN -> STROKE_WARN
-        BannerLevel.ERROR -> STROKE_ERROR
     }
 
     private fun buildLayoutParams(): WindowManager.LayoutParams {
@@ -650,6 +647,44 @@ class BannerController(private val context: Context) {
 
             // 铃锤
             canvas.drawCircle(w * 0.50f, h * 0.90f, w * 0.09f, paint)
+        }
+    }
+
+    /**
+     * 玉简主题专用图标：一卷展开的简牍（卷轴）。
+     *
+     * 中轴是简片，上下两端是卷轴轴头；线条风格与铃铛一致（纯填充、随 level 着色）。
+     */
+    private class ScrollIconView(context: Context, color: Int) : View(context) {
+
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            style = Paint.Style.FILL
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) {
+                return
+            }
+
+            // 简片主体（中间矩形，略窄留出轴头）
+            canvas.drawRect(w * 0.18f, h * 0.16f, w * 0.82f, h * 0.84f, paint)
+
+            // 上下卷轴轴头（横向长条）
+            canvas.drawRoundRect(
+                w * 0.08f, h * 0.06f, w * 0.92f, h * 0.20f,
+                w * 0.06f, h * 0.06f, paint
+            )
+            canvas.drawRoundRect(
+                w * 0.08f, h * 0.80f, w * 0.92f, h * 0.94f,
+                w * 0.06f, h * 0.06f, paint
+            )
+
+            // 简片上的两道「刻痕」（镂空线，用透明挖不出来，改用背景近似：细长矩形画在简片中央）
+            // 悬浮窗没有固定背景色可借，镂空改为不绘制——刻痕感由两道轴头 + 简片留白比例营造
         }
     }
 }

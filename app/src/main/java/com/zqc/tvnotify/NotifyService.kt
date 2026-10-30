@@ -135,8 +135,9 @@ class NotifyService : Service() {
             // API 23~25 没有 channel 概念，用无 channel 构造器
             Notification.Builder(this)
         }
-        builder.setContentTitle("TVNotify 运行中")
-            .setContentText("局域网通知接口监听端口 $PORT")
+        val theme = Theme.current(this)
+        builder.setContentTitle(theme.foregroundTitle)
+            .setContentText(theme.foregroundText(PORT))
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -156,7 +157,7 @@ class NotifyService : Service() {
         }
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "TVNotify 常驻服务",
+            Theme.current(this).foregroundChannelName,
             NotificationManager.IMPORTANCE_MIN
         )
         channel.description = "保持局域网通知接口常驻，通知本身不展示内容"
