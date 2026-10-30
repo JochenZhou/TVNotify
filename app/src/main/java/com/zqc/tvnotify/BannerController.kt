@@ -19,6 +19,11 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.view.SurfaceHolder
+import android.view.SurfaceView
+import java.util.HashMap
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -77,10 +82,15 @@ data class BannerRequest(
     val sound: Boolean = true,
     val imageUrl: String? = null,
     val imageBase64: String? = null,
-    val videoUrl: String? = null
+    val videoUrl: String? = null,
+    /** mp4 视频：HTTP(S) 直链、file:// URI 或本地绝对路径 */
+    val videoFile: String? = null,
+    /** mp4 是否播放音轨；默认静音，避免和横幅提示音打架 */
+    val videoSound: Boolean = false
 ) {
     val hasMedia: Boolean
-        get() = !videoUrl.isNullOrBlank() || !imageUrl.isNullOrBlank() || !imageBase64.isNullOrBlank()
+        get() = !videoFile.isNullOrBlank() || !videoUrl.isNullOrBlank() ||
+                !imageUrl.isNullOrBlank() || !imageBase64.isNullOrBlank()
 
     companion object {
         const val DEFAULT_DURATION_SEC = 5
@@ -133,6 +143,11 @@ class BannerController(private val context: Context) {
 
         /** 等待主线程完成「读状态 + 移除视图」的上限，超时按「无横幅」作答 */
         private const val DISMISS_WAIT_MS = 500L
+
+        /** 媒体回退链的层级：mp4 → MJPEG → 静态图 */
+        private const val MEDIA_STAGE_MP4 = 0
+        private const val MEDIA_STAGE_MJPEG = 1
+        private const val MEDIA_STAGE_IMAGE = 2
     }
 
     private val windowManager: WindowManager =
@@ -647,10 +662,27 @@ class BannerController(private val context: Context) {
         }
         frame.addView(imageView)
 
-        // 动态流角标
-        if (!request.videoUrl.isNullOrBlank()) {
+        // mp4 专用：SurfaceView 是零拷贝路径，解码器直接把帧送到显示层，
+        // 不经过 Bitmap → GL 上传，所以比 MJPEG 软解省一大截内存。
+        val surfaceView = SurfaceView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            visibility = View.GONE
+        }
+        frame.addView(surfaceView)
+
+        // 动态角标：MJPEG 显示「灵镜」，mp4 显示「灵影」
+        val isMp4 = !request.videoFile.isNullOrBlank()
+        val isMjpeg = !isMp4 && !request.videoUrl.isNullOrBlank()
+        if (isMp4 || isMjpeg) {
             val liveBadge = TextView(context).apply {
-                text = if (theme == Theme.XIUXIAN) "灵镜" else "LIVE"
+                text = when {
+                    !isXianxiaBadge(theme) -> if (isMp4) "MP4" else "LIVE"
+                    isMp4 -> "灵影"
+                    else -> "灵镜"
+                }
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
                 setTextColor(Color.WHITE)
                 typeface = Typeface.DEFAULT_BOLD
@@ -672,43 +704,241 @@ class BannerController(private val context: Context) {
             frame.addView(liveBadge)
         }
 
-        activeMediaSession = if (!request.videoUrl.isNullOrBlank()) {
-            MjpegStreamSession(
-                videoUrl = request.videoUrl,
-                targetView = imageView,
+        // 回退链：mp4 → MJPEG → 静态图，任一层失败自动降级，绝不黑屏
+        startMedia(request, imageView, surfaceView, MEDIA_STAGE_MP4)
+
+        return frame
+    }
+
+    private fun isXianxiaBadge(theme: Theme): Boolean = theme == Theme.XIUXIAN
+
+    /**
+     * 按 stage 启动媒体会话，失败时递归降级。
+     *
+     * stage 0 = mp4（[BannerRequest.videoFile]）
+     * stage 1 = MJPEG 流（[BannerRequest.videoUrl]）
+     * stage 2 = 静态图（image / image_base64），无图则留空
+     */
+    private fun startMedia(
+        request: BannerRequest,
+        imageView: ImageView,
+        surfaceView: SurfaceView,
+        stage: Int
+    ) {
+        if (stage == MEDIA_STAGE_MP4 && !request.videoFile.isNullOrBlank()) {
+            surfaceView.visibility = View.VISIBLE
+            imageView.visibility = View.GONE
+            val session = Mp4Session(
+                context = context,
+                source = request.videoFile,
+                surfaceView = surfaceView,
+                muted = !request.videoSound,
                 mainHandler = mainHandler,
                 onFailure = {
-                    if (!request.imageUrl.isNullOrBlank() || !request.imageBase64.isNullOrBlank()) {
-                        mainHandler.post {
-                            if (bannerView != null) {
-                                val fallback = ImageMediaSession(
-                                    imageUrl = request.imageUrl,
-                                    imageBase64 = request.imageBase64,
-                                    targetView = imageView,
-                                    mainHandler = mainHandler
-                                )
-                                activeMediaSession = fallback
-                                fallback.start()
-                            }
+                    mainHandler.post {
+                        if (bannerView != null) {
+                            startMedia(request, imageView, surfaceView, MEDIA_STAGE_MJPEG)
                         }
                     }
                 }
             )
-        } else {
-            ImageMediaSession(
-                imageUrl = request.imageUrl,
-                imageBase64 = request.imageBase64,
-                targetView = imageView,
-                mainHandler = mainHandler
-            )
+            activeMediaSession = session
+            session.start()
+            return
         }
 
-        return frame
+        if (stage <= MEDIA_STAGE_MJPEG && !request.videoUrl.isNullOrBlank()) {
+            surfaceView.visibility = View.GONE
+            imageView.visibility = View.VISIBLE
+            val session = MjpegStreamSession(
+                videoUrl = request.videoUrl,
+                targetView = imageView,
+                mainHandler = mainHandler,
+                onFailure = {
+                    mainHandler.post {
+                        if (bannerView != null) {
+                            startMedia(request, imageView, surfaceView, MEDIA_STAGE_IMAGE)
+                        }
+                    }
+                }
+            )
+            activeMediaSession = session
+            session.start()
+            return
+        }
+
+        surfaceView.visibility = View.GONE
+        imageView.visibility = View.VISIBLE
+        val session = ImageMediaSession(
+            imageUrl = request.imageUrl,
+            imageBase64 = request.imageBase64,
+            targetView = imageView,
+            mainHandler = mainHandler
+        )
+        activeMediaSession = session
+        session.start()
     }
 
     private interface MediaSession {
         fun start()
         fun stop()
+    }
+
+    /**
+     * mp4 播放会话：系统 MediaPlayer + SurfaceView（硬件解码、零拷贝）。
+     *
+     * 为什么不用 ExoPlayer：它要引入整套 AndroidX，APK 从 330KB 涨到 1.8MB+；
+     * MediaPlayer 是 API 23 自带的硬件解码路径，本工程得以保持零 AndroidX。
+     *
+     * 内存上真正决定开销的是**视频分辨率**（解码缓冲按分辨率分配），
+     * 而不是这个 220dp×124dp 的显示窗口，所以建议推送 ≤720p 的 mp4。
+     */
+    private class Mp4Session(
+        private val context: Context,
+        private val source: String,
+        private val surfaceView: SurfaceView,
+        private val muted: Boolean,
+        private val mainHandler: Handler,
+        private val onFailure: (() -> Unit)?
+    ) : MediaSession {
+
+        private var player: MediaPlayer? = null
+        private var surfaceCallback: SurfaceHolder.Callback? = null
+
+        @Volatile
+        private var stopped = false
+
+        override fun start() {
+            val callback = object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    if (!stopped) {
+                        prepare(holder)
+                    }
+                }
+
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    // 尺寸变化不需要重建播放器，MediaPlayer 会自动缩放
+                }
+
+                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    // Surface 销毁（横幅消失/窗口重建）必须先释放，否则下次 setSurface 会失败
+                    releasePlayer()
+                }
+            }
+            surfaceCallback = callback
+            surfaceView.holder.addCallback(callback)
+            // 横幅重建时 Surface 可能已经可用，surfaceCreated 不会再回调，这里补一次
+            val surface = surfaceView.holder.surface
+            if (surface != null && surface.isValid) {
+                prepare(surfaceView.holder)
+            }
+            probeAspectRatioAsync()
+        }
+
+        private fun prepare(holder: SurfaceHolder) {
+            if (stopped || player != null) {
+                return
+            }
+            try {
+                val mp = MediaPlayer()
+                player = mp
+                mp.setSurface(holder.surface)
+                when {
+                    source.startsWith("http://") || source.startsWith("https://") -> mp.setDataSource(source)
+                    source.startsWith("content://") || source.startsWith("file://") ->
+                        mp.setDataSource(context, Uri.parse(source))
+                    else -> mp.setDataSource(source)
+                }
+                mp.isLooping = true
+                if (muted) {
+                    mp.setVolume(0f, 0f)
+                }
+                mp.setOnPreparedListener { it.start() }
+                mp.setOnErrorListener { _, what, extra ->
+                    Log.w(TAG, "mp4 播放失败 what=$what extra=$extra")
+                    releasePlayer()
+                    onFailure?.invoke()
+                    true
+                }
+                mp.prepareAsync()
+            } catch (e: Exception) {
+                Log.w(TAG, "mp4 初始化异常: ${e.message}")
+                releasePlayer()
+                onFailure?.invoke()
+            }
+        }
+
+        /**
+         * 后台读取视频宽高，再按 16:9 窗口等比缩放 SurfaceView。
+         *
+         * 放后台线程：http 源的元数据探测会走网络，主线程做会卡住横幅入场动画。
+         */
+        private fun probeAspectRatioAsync() {
+            Thread({
+                val retriever = MediaMetadataRetriever()
+                try {
+                    if (source.startsWith("http://") || source.startsWith("https://")) {
+                        retriever.setDataSource(source, HashMap<String, String>())
+                    } else {
+                        retriever.setDataSource(source)
+                    }
+                    val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                        ?.toIntOrNull()
+                    val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                        ?.toIntOrNull()
+                    if (w != null && h != null && w > 0 && h > 0 && !stopped) {
+                        surfaceView.post { fitInside(w, h) }
+                    }
+                } catch (e: Exception) {
+                    // 探测失败就保持铺满，不影响播放本身
+                    Log.d(TAG, "mp4 尺寸探测失败: ${e.message}")
+                } finally {
+                    try { retriever.release() } catch (_: Exception) {}
+                }
+            }, "tvnotify-mp4-probe").apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        private fun fitInside(videoW: Int, videoH: Int) {
+            if (stopped) {
+                return
+            }
+            val parent = surfaceView.parent as? View ?: return
+            val boxW = parent.width
+            val boxH = parent.height
+            if (boxW <= 0 || boxH <= 0) {
+                return
+            }
+            val scale = minOf(boxW.toFloat() / videoW, boxH.toFloat() / videoH)
+            val params = FrameLayout.LayoutParams(
+                (videoW * scale).toInt().coerceAtLeast(1),
+                (videoH * scale).toInt().coerceAtLeast(1)
+            )
+            params.gravity = Gravity.CENTER
+            surfaceView.layoutParams = params
+        }
+
+        private fun releasePlayer() {
+            val mp = player
+            player = null
+            if (mp != null) {
+                try { mp.stop() } catch (_: Exception) {}
+                try { mp.reset() } catch (_: Exception) {}
+                try { mp.release() } catch (_: Exception) {}
+            }
+        }
+
+        override fun stop() {
+            stopped = true
+            val callback = surfaceCallback
+            surfaceCallback = null
+            if (callback != null) {
+                try { surfaceView.holder.removeCallback(callback) } catch (_: Exception) {}
+            }
+            releasePlayer()
+        }
     }
 
     private class MjpegStreamSession(

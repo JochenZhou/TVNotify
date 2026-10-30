@@ -47,8 +47,15 @@ class NotifyHttpServer(
         private const val MIN_DURATION_SEC = 1
         private const val MAX_DURATION_SEC = 30
 
-        /** 请求体上限，电视端只处理短通知，超过部分直接丢弃 */
-        private const val MAX_BODY_BYTES = 32 * 1024
+        /**
+         * 请求体上限。
+         *
+         * 原值 32KB 只够纯文字通知；`image_base64` 是 base64 内联图片，
+         * 一张手机照片（1280×720 JPEG ≈ 100KB）base64 后就有 140KB，
+         * 会被截断成非法 JSON。这里放到 4MB：够传 2~3MB 的原图，
+         * 同时仍能挡住恶意超长请求（电视内存有限，不能无上限）。
+         */
+        private const val MAX_BODY_BYTES = 4 * 1024 * 1024
     }
 
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -105,7 +112,22 @@ class NotifyHttpServer(
 
         val title = payload.optString("title", "").trim()
         val text = payload.optString("text", "").trim()
-        if (title.isEmpty() && text.isEmpty()) {
+
+        val imageUrl = payload.optString("image", payload.optString("imageUrl", "")).trim()
+        val imageBase64 = payload.optString("image_base64", payload.optString("imageBase64", "")).trim()
+        val videoUrl = payload.optString("video", payload.optString("videoUrl", "")).trim()
+        // mp4：video_file / videoFile / mp4 三个别名都收，方便 HA 模板书写
+        val videoFile = payload.optString(
+            "video_file",
+            payload.optString("videoFile", payload.optString("mp4", ""))
+        ).trim()
+        val videoSound = payload.optBoolean("video_sound", payload.optBoolean("videoSound", false))
+
+        // 文字与媒体全空才拒绝：只推一张图/一段视频（无文案）也是合法用法
+        val hasAnyContent = title.isNotEmpty() || text.isNotEmpty() ||
+                imageUrl.isNotEmpty() || imageBase64.isNotEmpty() ||
+                videoUrl.isNotEmpty() || videoFile.isNotEmpty()
+        if (!hasAnyContent) {
             return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, EMPTY_CONTENT_BODY)
         }
 
@@ -127,10 +149,6 @@ class NotifyHttpServer(
             payload.optInt("maxDuration", BannerRequest.DEFAULT_MAX_DURATION_SEC)
         }
 
-        val imageUrl = payload.optString("image", payload.optString("imageUrl", "")).trim()
-        val imageBase64 = payload.optString("image_base64", payload.optString("imageBase64", "")).trim()
-        val videoUrl = payload.optString("video", payload.optString("videoUrl", "")).trim()
-
         onNotify(
             BannerRequest(
                 title = title,
@@ -142,7 +160,9 @@ class NotifyHttpServer(
                 sound = sound,
                 imageUrl = if (imageUrl.isNotEmpty()) imageUrl else null,
                 imageBase64 = if (imageBase64.isNotEmpty()) imageBase64 else null,
-                videoUrl = if (videoUrl.isNotEmpty()) videoUrl else null
+                videoUrl = if (videoUrl.isNotEmpty()) videoUrl else null,
+                videoFile = if (videoFile.isNotEmpty()) videoFile else null,
+                videoSound = videoSound
             )
         )
         return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")

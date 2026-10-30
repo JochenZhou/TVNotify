@@ -137,8 +137,14 @@ Content-Type: application/json
 | `image` | string | 否 | `null` | HTTP/HTTPS URL | 静态图片/抓拍快照 URL，右侧 16:9 画卷展示 |
 | `image_base64` | string | 否 | `null` | Base64 编码 | 图片 Base64（支持 `data:image/...;base64,` 前缀） |
 | `video` | string | 否 | `null` | HTTP/HTTPS URL | 动态视频流 URL（**MJPEG 流**，纯软解不占硬件解码器） |
+| `video_file` | string | 否 | `null` | HTTP(S) 直链 / `file://` URI / 本地绝对路径 | **mp4 视频**，硬件解码，SurfaceView 零拷贝播放（别名 `videoFile` / `mp4`） |
+| `video_sound` | boolean | 否 | `false` | `true` / `false` | mp4 是否播放音轨；默认静音，避免和横幅提示音打架 |
 
-`title` 与 `text` 去首尾空白后**同时为空**会被拒绝。
+`title` 与 `text` 去首尾空白后**同时为空**会被拒绝——但如果带了 `image` / `image_base64` / `video` / `video_file` 中任意一项，只推媒体、不带文案也是合法的。
+
+**媒体回退链**：`video_file` → `video` → `image` / `image_base64`。任一层失败（地址不通、格式不支持、解码报错）会自动降级到下一层，绝不黑屏。
+
+**请求体上限 4MB**：`image_base64` 是内联 base64，体积会膨胀约 1/3，所以单张图片控制在 ~3MB 以内；更大的图请改用 `image` URL。
 
 `level` 对应的视觉效果（只改颜色，不改布局）：
 
@@ -198,7 +204,29 @@ curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
 curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
   -H 'Content-Type: application/json' \
   -d '{"title":"实时灵镜","text":"正在调取庭院实时监控画面","video":"http://192.168.1.100:8123/api/camera_proxy_stream/camera.backyard","duration":15}'
+
+# mp4 视频（硬件解码，建议 ≤720p；HTTP 直链需服务器支持 Range 请求）
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"灵影","text":"山门阵前录影","video_file":"http://192.168.1.100:8080/clips/doorbell.mp4","duration":20}'
+
+# mp4 带声音
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"灵影有声","text":"带音轨播放","video_file":"http://192.168.1.100:8080/clips/doorbell.mp4","video_sound":true,"duration":20}'
 ```
+
+### 关于 mp4 的内存开销
+
+解码缓冲按**视频分辨率**分配，与屏幕上 220dp×124dp 的显示窗口无关：
+
+| 分辨率 | 单帧 YUV | 解码缓冲（8~16 帧） |
+| --- | --- | --- |
+| 1080p | 2.97MB | 24~47MB |
+| 720p | 1.32MB | 11~21MB |
+| 480p | 0.59MB | 5~9MB |
+
+电视端内存有限，**建议推 ≤720p 的 mp4**；1080p 能播但占用明显更高。
 
 ---
 
