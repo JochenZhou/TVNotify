@@ -773,7 +773,7 @@ class BannerController(private val context: Context) {
             return
         }
 
-        surfaceView.visibility = View.GONE
+        textureView.visibility = View.GONE
         imageView.visibility = View.VISIBLE
         val session = ImageMediaSession(
             imageUrl = request.imageUrl,
