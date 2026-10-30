@@ -134,6 +134,9 @@ Content-Type: application/json
 | `sticky` | boolean | 否 | `false` | `true` / `false` | 常驻：不按 `duration` 自动消失，直到 `/dismiss` 或 `maxDuration` 到点 |
 | `maxDuration` | number | 否 | `300` | `30..3600`（越界自动 clamp） | 仅 `sticky: true` 生效，单位秒；**强制兜底** |
 | `sound` | boolean | 否 | `true` | `true` / `false` | 本条是否播放提示音 |
+| `image` | string | 否 | `null` | HTTP/HTTPS URL | 静态图片/抓拍快照 URL，右侧 16:9 画卷展示 |
+| `image_base64` | string | 否 | `null` | Base64 编码 | 图片 Base64（支持 `data:image/...;base64,` 前缀） |
+| `video` | string | 否 | `null` | HTTP/HTTPS URL | 动态视频流 URL（**MJPEG 流**，纯软解不占硬件解码器） |
 
 `title` 与 `text` 去首尾空白后**同时为空**会被拒绝。
 
@@ -185,6 +188,16 @@ curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
 curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
   -H 'Content-Type: application/json' \
   -d '{"title":"备份完成","text":"NAS 快照已上传","sound":false}'
+
+# 门铃抓拍（静态快照图片 URL）
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"门口访客","text":"检测到有人按响门铃","image":"http://192.168.1.100:8123/api/camera_proxy/camera.doorbell","duration":10}'
+
+# 摄像头实时视频流（动态 MJPEG 流，右侧 16:9 实时刷新画卷）
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/notify" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"实时灵镜","text":"正在调取庭院实时监控画面","video":"http://192.168.1.100:8123/api/camera_proxy_stream/camera.backyard","duration":15}'
 ```
 
 ---

@@ -4,9 +4,12 @@ import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Outline
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
@@ -19,16 +22,26 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.TextUtils
+import android.util.Base64
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
+import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -61,8 +74,14 @@ data class BannerRequest(
     val level: BannerLevel = BannerLevel.INFO,
     val sticky: Boolean = false,
     val maxDurationSeconds: Int = DEFAULT_MAX_DURATION_SEC,
-    val sound: Boolean = true
+    val sound: Boolean = true,
+    val imageUrl: String? = null,
+    val imageBase64: String? = null,
+    val videoUrl: String? = null
 ) {
+    val hasMedia: Boolean
+        get() = !videoUrl.isNullOrBlank() || !imageUrl.isNullOrBlank() || !imageBase64.isNullOrBlank()
+
     companion object {
         const val DEFAULT_DURATION_SEC = 5
 
@@ -100,6 +119,7 @@ class BannerController(private val context: Context) {
 
         /** 屏宽占比：正文放到 4 行后需要更宽的可视区域，否则中文长句会被切得过碎 */
         private const val BANNER_WIDTH_RATIO = 0.65f
+        private const val BANNER_WIDTH_RATIO_WITH_MEDIA = 0.78f
         private const val BANNER_TOP_MARGIN_DP = 32f
 
         /**
@@ -134,6 +154,7 @@ class BannerController(private val context: Context) {
     private var bannerParams: WindowManager.LayoutParams? = null
     private var currentAnimator: Animator? = null
     private var mediaPlayer: MediaPlayer? = null
+    private var activeMediaSession: MediaSession? = null
 
     fun isShowing(): Boolean = bannerView != null
 
@@ -155,16 +176,20 @@ class BannerController(private val context: Context) {
         removeBannerNow()
 
         val view = buildBannerView(request)
-        val params = buildLayoutParams()
+        val params = buildLayoutParams(request.hasMedia)
         // 先置为不可见，避免 addView 后到动画开始之间闪一下
         view.alpha = 0f
         view.translationY = -dp(FALLBACK_HEIGHT_DP).toFloat()
 
         if (!addViewSafely(view, params)) {
+            activeMediaSession?.stop()
+            activeMediaSession = null
             return
         }
         bannerView = view
         bannerParams = params
+
+        activeMediaSession?.start()
 
         if (request.sound) {
             playSound()
@@ -353,6 +378,8 @@ class BannerController(private val context: Context) {
         val height = if (view.height > 0) view.height else dp(FALLBACK_HEIGHT_DP)
         val endY = -(height + dp(BANNER_TOP_MARGIN_DP)).toFloat()
         animate(view, view.translationY, endY, view.alpha, 0f, view.scaleX, 0.95f, EXIT_DURATION_MS) {
+            activeMediaSession?.stop()
+            activeMediaSession = null
             removeViewSafely(view)
             if (bannerView === view) {
                 bannerView = null
@@ -486,6 +513,13 @@ class BannerController(private val context: Context) {
 
         val columnParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         container.addView(column, columnParams)
+
+        // 右侧媒体视窗（静态图片或动态 MJPEG 视频流）
+        if (request.hasMedia) {
+            val mediaCard = buildMediaCard(theme, request)
+            container.addView(mediaCard)
+        }
+
         return container
     }
 
@@ -543,9 +577,10 @@ class BannerController(private val context: Context) {
         return view
     }
 
-    private fun buildLayoutParams(): WindowManager.LayoutParams {
+    private fun buildLayoutParams(hasMedia: Boolean): WindowManager.LayoutParams {
         val screenWidth = context.resources.displayMetrics.widthPixels
-        val width = (screenWidth * BANNER_WIDTH_RATIO).toInt()
+        val ratio = if (hasMedia) BANNER_WIDTH_RATIO_WITH_MEDIA else BANNER_WIDTH_RATIO
+        val width = (screenWidth * ratio).toInt()
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -568,6 +603,316 @@ class BannerController(private val context: Context) {
         params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
         params.y = dp(BANNER_TOP_MARGIN_DP)
         return params
+    }
+
+    // ------------------------------------------------------------------
+    // 多媒体视窗构建与会话管理（静态图片 + 动态 MJPEG 视频流）
+    // ------------------------------------------------------------------
+
+    private fun buildMediaCard(theme: Theme, request: BannerRequest): View {
+        val mediaWidth = dp(220f)
+        val mediaHeight = dp(124f) // 16:9 ratio
+
+        val frame = FrameLayout(context).apply {
+            layoutParams = LinearLayout.LayoutParams(mediaWidth, mediaHeight).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setMargins(dp(16f), 0, 0, 0)
+            }
+            val cornerRadius = dp(if (theme == Theme.XIUXIAN) 14f else 10f).toFloat()
+            val strokeColor = if (theme == Theme.XIUXIAN) {
+                theme.bannerStrokeColor(request.level)
+            } else {
+                Color.argb(0x55, 0xFF, 0xFF, 0xFF)
+            }
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                this.cornerRadius = cornerRadius
+                setColor(if (theme == Theme.XIUXIAN) Color.argb(0xA0, 0x09, 0x16, 0x1A) else Color.argb(0xA0, 0x15, 0x16, 0x1A))
+                setStroke(dp(1.2f), strokeColor)
+            }
+            clipToOutline = true
+            outlineProvider = object : ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, cornerRadius)
+                }
+            }
+        }
+
+        val imageView = ImageView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            scaleType = ImageView.ScaleType.CENTER_CROP
+        }
+        frame.addView(imageView)
+
+        // 动态流角标
+        if (!request.videoUrl.isNullOrBlank()) {
+            val liveBadge = TextView(context).apply {
+                text = if (theme == Theme.XIUXIAN) "灵镜" else "LIVE"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                includeFontPadding = false
+                setPadding(dp(5f), dp(1.5f), dp(5f), dp(1.5f))
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dp(4f).toFloat()
+                    setColor(if (theme == Theme.XIUXIAN) Color.argb(0xC0, 0x13, 0x56, 0x47) else Color.argb(0xD0, 0xD9, 0x38, 0x3A))
+                }
+                layoutParams = FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.START
+                    setMargins(dp(6f), dp(6f), 0, 0)
+                }
+            }
+            frame.addView(liveBadge)
+        }
+
+        activeMediaSession = if (!request.videoUrl.isNullOrBlank()) {
+            MjpegStreamSession(
+                videoUrl = request.videoUrl,
+                targetView = imageView,
+                mainHandler = mainHandler,
+                onFailure = {
+                    if (!request.imageUrl.isNullOrBlank() || !request.imageBase64.isNullOrBlank()) {
+                        mainHandler.post {
+                            if (bannerView != null) {
+                                val fallback = ImageMediaSession(
+                                    imageUrl = request.imageUrl,
+                                    imageBase64 = request.imageBase64,
+                                    targetView = imageView,
+                                    mainHandler = mainHandler
+                                )
+                                activeMediaSession = fallback
+                                fallback.start()
+                            }
+                        }
+                    }
+                }
+            )
+        } else {
+            ImageMediaSession(
+                imageUrl = request.imageUrl,
+                imageBase64 = request.imageBase64,
+                targetView = imageView,
+                mainHandler = mainHandler
+            )
+        }
+
+        return frame
+    }
+
+    private interface MediaSession {
+        fun start()
+        fun stop()
+    }
+
+    private class MjpegStreamSession(
+        private val videoUrl: String,
+        private val targetView: ImageView,
+        private val mainHandler: Handler,
+        private val onFailure: (() -> Unit)?
+    ) : MediaSession {
+        @Volatile private var isRunning = false
+        private var connection: HttpURLConnection? = null
+        private var inStreamRef: InputStream? = null
+        private var workerThread: Thread? = null
+
+        override fun start() {
+            isRunning = true
+            workerThread = Thread({
+                runStream()
+            }, "tvnotify-mjpeg").apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        private fun runStream() {
+            try {
+                val url = URL(videoUrl)
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 3500
+                    readTimeout = 5000
+                    requestMethod = "GET"
+                    setRequestProperty("User-Agent", "TVNotify/1.2.2")
+                    setRequestProperty("Accept", "multipart/x-mixed-replace, image/jpeg, */*")
+                }
+                connection = conn
+                conn.connect()
+                if (conn.responseCode != 200) {
+                    Log.w(TAG, "MJPEG 连接返回非 200: ${conn.responseCode}")
+                    onFailure?.invoke()
+                    return
+                }
+                val inStream = BufferedInputStream(conn.inputStream, 16384)
+                inStreamRef = inStream
+                val parser = MjpegFrameParser(inStream)
+                var lastRenderTime = 0L
+                val minFrameIntervalMs = 66L // ~15 FPS 节流，低端电视芯片低负载运行
+
+                while (isRunning && !Thread.currentThread().isInterrupted) {
+                    val frameData = parser.readNextFrame() ?: break
+                    val now = SystemClock.uptimeMillis()
+                    if (now - lastRenderTime < minFrameIntervalMs) {
+                        continue
+                    }
+                    lastRenderTime = now
+
+                    val opts = BitmapFactory.Options().apply {
+                        inPreferredConfig = Bitmap.Config.RGB_565
+                    }
+                    val bitmap = BitmapFactory.decodeByteArray(frameData, 0, frameData.size, opts) ?: continue
+
+                    mainHandler.post {
+                        if (isRunning) {
+                            targetView.setImageBitmap(bitmap)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (isRunning) {
+                    Log.w(TAG, "MJPEG 播放异常: ${e.message}")
+                    onFailure?.invoke()
+                }
+            } finally {
+                try { inStreamRef?.close() } catch (_: Exception) {}
+                try { connection?.disconnect() } catch (_: Exception) {}
+            }
+        }
+
+        override fun stop() {
+            isRunning = false
+            try { inStreamRef?.close() } catch (_: Exception) {}
+            try { connection?.disconnect() } catch (_: Exception) {}
+            workerThread?.interrupt()
+            workerThread = null
+        }
+    }
+
+    private class ImageMediaSession(
+        private val imageUrl: String?,
+        private val imageBase64: String?,
+        private val targetView: ImageView,
+        private val mainHandler: Handler
+    ) : MediaSession {
+        @Volatile private var isRunning = false
+        private var connection: HttpURLConnection? = null
+        private var workerThread: Thread? = null
+
+        override fun start() {
+            isRunning = true
+            workerThread = Thread({
+                try {
+                    val bytes = if (!imageBase64.isNullOrBlank()) {
+                        val raw = imageBase64.trim()
+                        val clean = if (raw.contains(",")) raw.substringAfter(",") else raw
+                        Base64.decode(clean, Base64.DEFAULT)
+                    } else if (!imageUrl.isNullOrBlank()) {
+                        downloadImageBytes(imageUrl)
+                    } else null
+
+                    if (bytes != null && isRunning) {
+                        val bitmap = decodeSampledBitmap(bytes, 480, 270)
+                        if (bitmap != null && isRunning) {
+                            mainHandler.post {
+                                if (isRunning) {
+                                    targetView.alpha = 0f
+                                    targetView.setImageBitmap(bitmap)
+                                    targetView.animate().alpha(1f).setDuration(220).start()
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "加载静态图片异常: ${e.message}")
+                }
+            }, "tvnotify-img").apply {
+                isDaemon = true
+                start()
+            }
+        }
+
+        private fun downloadImageBytes(urlStr: String): ByteArray? {
+            val url = URL(urlStr)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 3000
+                readTimeout = 4000
+                requestMethod = "GET"
+                setRequestProperty("User-Agent", "TVNotify/1.2.2")
+            }
+            connection = conn
+            conn.connect()
+            if (conn.responseCode != 200) return null
+            return conn.inputStream.use { it.readBytes() }
+        }
+
+        private fun decodeSampledBitmap(bytes: ByteArray, reqW: Int, reqH: Int): Bitmap? {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            if (bounds.outWidth > reqW || bounds.outHeight > reqH) {
+                val halfW = bounds.outWidth / 2
+                val halfH = bounds.outHeight / 2
+                while ((halfW / sample) >= reqW && (halfH / sample) >= reqH) {
+                    sample *= 2
+                }
+            }
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+            return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+        }
+
+        override fun stop() {
+            isRunning = false
+            try { connection?.disconnect() } catch (_: Exception) {}
+            workerThread?.interrupt()
+            workerThread = null
+        }
+    }
+
+    private class MjpegFrameParser(private val inStream: InputStream) {
+        private val buffer = ByteArrayOutputStream(32768)
+        private var prevByte: Int = -1
+
+        fun readNextFrame(): ByteArray? {
+            buffer.reset()
+            var foundSoi = false
+
+            while (true) {
+                val b = inStream.read()
+                if (b == -1) return null
+                if (prevByte == 0xFF && b == 0xD8) {
+                    foundSoi = true
+                    buffer.write(0xFF)
+                    buffer.write(0xD8)
+                    prevByte = -1
+                    break
+                }
+                prevByte = b
+            }
+
+            if (!foundSoi) return null
+
+            var remainingLimit = 2 * 1024 * 1024 // 2MB 单帧防爆限制
+            while (remainingLimit-- > 0) {
+                val b = inStream.read()
+                if (b == -1) return null
+                buffer.write(b)
+                if (prevByte == 0xFF && b == 0xD9) {
+                    prevByte = -1
+                    return buffer.toByteArray()
+                }
+                prevByte = b
+            }
+            return null
+        }
     }
 
     // ------------------------------------------------------------------
@@ -607,6 +952,8 @@ class BannerController(private val context: Context) {
     }
 
     private fun removeBannerNow() {
+        activeMediaSession?.stop()
+        activeMediaSession = null
         mainHandler.removeCallbacks(hideRunnable)
         mainHandler.removeCallbacks(clearKeepScreenOnRunnable)
         cancelAnimation()

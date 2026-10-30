@@ -59,6 +59,58 @@ class MainActivity : Activity() {
         private const val QR_PIXEL_SIZE = 220
         const val HA_INTEGRATION_URL = "https://github.com/JochenZhou/ha-tvnotify"
 
+        // 16:9 示例测试画卷（纯原生 JPEG Base64，供长按「试传一简」测试多媒体横幅）
+        private const val SAMPLE_TEST_IMAGE_BASE64 =
+            "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLikxMC4p" +
+            "LSwzOko+MzZGNywtQFdBRkxOUlNSMj5aYVpQYEpRUk//2wBDAQ4ODhMREyYVFSZPNS01T09PT09P" +
+            "T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0//wAARCABaAKADASIA" +
+            "AhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQA" +
+            "AAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3" +
+            "ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWm" +
+            "p6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEA" +
+            "AwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSEx" +
+            "BhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElK" +
+            "U1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3" +
+            "uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDiqKK2" +
+            "oE0yDTbSW8tTI84f597AAhsDOO3Pb06GtDjnPktpcxaK15ZLCJQ/9kB4icCRLpip9s9j7HB9qi+2" +
+            "aZ/0CP8AyZagSqN7Rf4f5mbRWl9s0z/oEf8Aky1H2zTP+gR/5MtQHPL+V/h/mZtFaX2zTP8AoEf+" +
+            "TLUfbNM/6BH/AJMtQHPL+V/h/mZtFaX2zTP+gR/5MtR9s0z/AKBH/ky1Ac8v5X+H+Zm0VpfbNM/6" +
+            "BH/ky1H2zTP+gR/5MtQHPL+V/h/mZtFaX2zTP+gR/wCTLUfbNM/6BH/ky1Ac8v5X+H+Zm0VpfbNM" +
+            "/6BH/ky1SxSWEql/7ICRA4Mj3TBR7Z7n2GT7UA6jW8X+H+ZkUVuIulXS3SW1kVaK3eTzPMYjcPQH" +
+            "qPc4+lYdA4T5ulgrSvv+QJpn/bX/ANCFZtaV9/yBNM/7a/8AoQoFP4o+v6MoRTSQsWicqSMH0I9C" +
+            "O49jU2+3n/1i+RIf40GUP1Xt9R+C1WopluKepNLbSRKHwHiJwJEOVPtnsfY4PtUNPimkhYtE5UkY" +
+            "PoR6Edx7Gpt9vP8A6xfIkP8AGgyh+q9vqPwWkK7W5WoqaW2kiUPgPETgSIcqfbPY+xwfaoaZSaew" +
+            "UUUUAFTRW0kql8BIgcGRzhR7Z7n2GT7UA2luQ1NFbSSqXwEiBwZHOFHtnufYZPtT99vB/q18+Qfx" +
+            "uMIPovf6n8VqGWaSZg0rliBgegHoB2HsKCbt7E2+3g/1a+fIP43GEH0Xv9T+K1DLNJMwaVyxAwPQ" +
+            "D0A7D2FMooGopamlo3/L/wD9ecn9Kza0tG/5f/8Arzk/pWbSIj8cvkFaV9/yBNM/7a/+hCs2tK+/" +
+            "5Ammf9tf/QhQE/ij6/ozNooopmgUVqaFNJHcXMSEBZbS43/KMkCFzjPXr/IVpTru0pUhimeAQwFF" +
+            "bmKWQldyqBg78lskHOAR6Uh2OcimkhYtE5UkYPoR6Edx7Gpt9vP/AKxfIkP8aDKH6r2+o/Ba2rog" +
+            "/sF2l85YzbQrAhA8rzAVyVOeWID544JPWqN9aXMmlaZPHbyvClq26RUJVf30vU9KBOJQltpIlD4D" +
+            "xE4EiHKn2z2PscH2qGutmmZdT1K5Vyp069nkOD95WJKg+o3qP++6brMct1ZRPJJfxx/ZoGLFMW3+" +
+            "qX/axnJ/hH0BNFxO8VqcpU0VtJKpfASIHBkc4Ue2e59hk+1dXptzcRRaGpuZrlJNR2FjKdgH7rAw" +
+            "D+IDY75WqaNqH9oO0w1O4doCF8xTDMg3DJiGW6dwOxPTrRcfxbGHvt4P9WvnyD+NxhB9F7/U/itQ" +
+            "yzSTMGlcsQMD0A9AOw9hXQtdXltJrMcd9P8ALbI4KsUIYyRZyAeG5IPvmucJLEliSTySe9AcqQlF" +
+            "FFMAooooA0tG/wCX/wD685P6Vm1paN/y/wD/AF5yf0rNpGcfjl8grSvv+QJpn/bX/wBCFZtaV9/y" +
+            "BNM/7a/+hCgJ/FH1/RmbRRRTNAooqaK2klUvgJEDgyOcKPbPc+wyfagG0tyGporaSVS+AkQODI5w" +
+            "o9s9z7DJ9qfvt4P9WvnyD+NxhB9F7/U/itQyzSTMGlcsQMD0A9AOw9hQTdvYm328H+rXz5B/G4wg" +
+            "+i9/qfxWoZZpJmDSuWIGB6AegHYewplFA1FLUfFNJCxaJypIwfQj0I7j2NTb7ef/AFi+RIf40GUP" +
+            "1Xt9R+C1WooBxT1JpbaSJQ+A8ROBIhyp9s9j7HB9qhp8U0kLFonKkjB9CPQjuPY1Nvt5/wDWL5Eh" +
+            "/jQZQ/Ve31H4LSFdrcrUVNLbSRKHwHiJwJEOVPtnsfY4PtUNMpNPYKKKKANLRv8Al/8A+vOT+lZt" +
+            "aWjf8v8A/wBecn9KzaRnH45fIK0r7/kCaZ/21/8AQhWbW01lcXmj6cIIywQSlj2Ubv8APA5oFVaT" +
+            "i33/AEZi1NFbSSqXwEiBwZHOFHtnufYZPtVz7FLB/q7C4nkH8bwsEH0Xv9T+K1DLa6lMwaW1uWIG" +
+            "B+6bAHoBjgewoH7RPZjN9vB/q18+QfxuMIPovf6n8VqGWaSZg0rliBgegHoB2HsKm/s++/587j/v" +
+            "03+FH9n33/Pncf8Afpv8KBpwWtytRVn+z77/AJ87j/v03+FH9n33/Pncf9+m/wAKY+ePcrUVZ/s+" +
+            "+/587j/v03+FH9n33/Pncf8Afpv8KA549ytRVn+z77/nzuP+/Tf4Uf2fff8APncf9+m/woDnj3K1" +
+            "FWf7Pvv+fO4/79N/hR/Z99/z53H/AH6b/CgOePchimkhYtE5UkYPoR6Edx7Gpt9vP/rF8iQ/xoMo" +
+            "fqvb6j8Fo/s++/587j/v03+FH9n33/Pncf8Afpv8KQm4PW4yW2kiUPgPETgSIcqfbPY+xwfaoauR" +
+            "WupQsWitblSRg/umwR6EY5Hsam+xSz/6ywuIJD/GkLFD9V7fUfgtAvaJbsNG/wCX/wD685P6Vm1t" +
+            "2Nhc2f24zxMqNZybXwcHp+R46HmsSgVNpyk15BU8d5dRIEiuZkQdFWQgCoKKZq0nuWf7Qvv+fy4/" +
+            "7+t/jR/aF9/z+XH/AH9b/Gq1FBPJHsWf7Qvv+fy4/wC/rf40f2hff8/lx/39b/Gq1FAckexZ/tC+" +
+            "/wCfy4/7+t/jR/aF9/z+XH/f1v8AGq1FAckexZ/tC+/5/Lj/AL+t/jR/aF9/z+XH/f1v8arUUByR" +
+            "7Fn+0L7/AJ/Lj/v63+NH9oX3/P5cf9/W/wAarUUByR7Fn+0L7/n8uP8Av63+NH9oX3/P5cf9/W/x" +
+            "qtRQHJHsWf7Qvv8An8uP+/rf40f2hff8/lx/39b/ABqtRQHJHsWf7Qvv+fy4/wC/rf40f2hff8/l" +
+            "x/39b/Gq1FAckexYa+vHUq93OysMEGQkEVXoooGklsf/2Q=="
+
         private val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
         private val WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT
     }
@@ -197,7 +249,11 @@ class MainActivity : Activity() {
 
         // 2x2 按钮网格
         val buttonRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        testButton = buildButton(theme.testButtonText) { showTestBanner() }
+        testButton = buildButton(
+            label = theme.testButtonText,
+            onClick = { showTestBanner() },
+            onLongClick = { showTestMediaBanner() }
+        )
         copyButton = buildButton(theme.copyButtonText) { copyCallUrl() }
         buttonRow1.addView(testButton, weightedParams(0))
         buttonRow1.addView(copyButton, weightedParams(1))
@@ -357,7 +413,11 @@ class MainActivity : Activity() {
      * 普通态：深青/深灰底色 + 细描边；
      * 聚焦态：高亮灵玉青/主题蓝 + 灵光白边 + 放大 1.04 倍平滑微动效。
      */
-    private fun buildButton(label: String, onClick: () -> Unit): Button {
+    private fun buildButton(
+        label: String,
+        onClick: () -> Unit,
+        onLongClick: (() -> Boolean)? = null
+    ): Button {
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
@@ -392,6 +452,9 @@ class MainActivity : Activity() {
         }
 
         button.setOnClickListener { onClick() }
+        if (onLongClick != null) {
+            button.setOnLongClickListener { onLongClick() }
+        }
         return button
     }
 
@@ -579,6 +642,25 @@ class MainActivity : Activity() {
                 durationSeconds = 5
             )
         )
+    }
+
+    private fun showTestMediaBanner(): Boolean {
+        if (!Settings.canDrawOverlays(this)) {
+            toast(theme.overlayPermissionToast)
+            openOverlaySettings()
+            return true
+        }
+        val controller = bannerController ?: BannerController(this).also { bannerController = it }
+        controller.show(
+            BannerRequest(
+                title = if (theme.isXianxia) "灵镜法相显化" else "实时画卷测试",
+                text = if (theme.isXianxia) "山门感应到外部灵讯，已呈递 16:9 实时法相画卷。" else "收到外部系统推送，已弹出 16:9 多媒体快照画卷。",
+                durationSeconds = 8,
+                imageBase64 = SAMPLE_TEST_IMAGE_BASE64
+            )
+        )
+        toast(if (theme.isXianxia) "长按试传：灵镜画卷显化" else "长按触发：16:9 多媒体画卷演示")
+        return true
     }
 
     private fun copyCallUrl() {

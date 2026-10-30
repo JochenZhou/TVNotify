@@ -127,6 +127,10 @@ class NotifyHttpServer(
             payload.optInt("maxDuration", BannerRequest.DEFAULT_MAX_DURATION_SEC)
         }
 
+        val imageUrl = payload.optString("image", payload.optString("imageUrl", "")).trim()
+        val imageBase64 = payload.optString("image_base64", payload.optString("imageBase64", "")).trim()
+        val videoUrl = payload.optString("video", payload.optString("videoUrl", "")).trim()
+
         onNotify(
             BannerRequest(
                 title = title,
@@ -135,7 +139,10 @@ class NotifyHttpServer(
                 level = level,
                 sticky = sticky,
                 maxDurationSeconds = rawMaxDuration,
-                sound = sound
+                sound = sound,
+                imageUrl = if (imageUrl.isNotEmpty()) imageUrl else null,
+                imageBase64 = if (imageBase64.isNotEmpty()) imageBase64 else null,
+                videoUrl = if (videoUrl.isNotEmpty()) videoUrl else null
             )
         )
         return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
