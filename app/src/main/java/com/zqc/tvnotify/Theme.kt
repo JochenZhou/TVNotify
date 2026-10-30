@@ -82,6 +82,9 @@ enum class Theme(val storageId: String) {
     val testButtonText: String get() = if (isXianxia) "试传一简" else "测试通知"
     val copyButtonText: String get() = if (isXianxia) "抄录法诀" else "复制调用地址"
     val resetButtonText: String get() = if (isXianxia) "重铸符钥" else "重置 Token"
+    val imageTestButtonText: String get() = if (isXianxia) "试显画影" else "图片测试"
+    val videoTestButtonText: String get() = if (isXianxia) "试演灵镜" else "视频测试"
+    val aboutButtonText: String get() = if (isXianxia) "简牍溯源" else "关于"
 
     val overlayPermissionToast: String get() =
         if (isXianxia) "施法前请先授予「显示在其他应用上层」之权" else "请先允许「显示在其他应用上层」权限"

@@ -31,6 +31,7 @@ class NotifyHttpServer(
     private val tokenProvider: () -> String,
     private val uptimeSecondsProvider: () -> Long,
     private val bannerVisibleProvider: () -> Boolean,
+    private val assets: android.content.res.AssetManager,
     private val onNotify: (BannerRequest) -> Unit,
     private val onDismiss: () -> Boolean
 ) : NanoHTTPD(advertisedPort) {
@@ -38,10 +39,15 @@ class NotifyHttpServer(
     companion object {
         private const val TAG = "TVNotifyHttp"
 
+        /** 测试流抽帧的内存缓存，懒加载一次 */
+        @Volatile
+        private var cachedTestFrames: List<ByteArray>? = null
+
         private const val JSON_MIME = "application/json; charset=utf-8"
         private const val ROUTE_NOTIFY = "notify"
         private const val ROUTE_DISMISS = "dismiss"
         private const val ROUTE_HEALTH = "health"
+        private const val ROUTE_STREAM = "stream"
 
         private const val DEFAULT_DURATION_SEC = 5
         private const val MIN_DURATION_SEC = 1
@@ -82,8 +88,96 @@ class NotifyHttpServer(
         return when (segments[1]) {
             ROUTE_NOTIFY -> handleNotify(session)
             ROUTE_DISMISS -> handleDismiss(session)
+            ROUTE_STREAM -> handleTestStream(session)
             else -> jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
         }
+    }
+
+    // ------------------------------------------------------------------
+    // GET /{token}/stream —— 内置测试 MJPEG 流（assets 抽帧循环）
+    // ------------------------------------------------------------------
+
+    /**
+     * 把 assets/testframes/ 里的抽帧循环成 MJPEG 流。
+     *
+     * 用途：设置界面的「视频测试」按钮，不再依赖外部流地址，开箱即测。
+     * 实现要点：MJPEG 客户端（本 App 的 MjpegStreamSession）按 SOI/EOI 边界
+     * 找帧、不看 Content-Type，所以必须保证一个 chunk 恰好是一帧完整 JPEG，
+     * 且不能使用 chunked 之外的分帧方式。这里每帧一个 write()，靠
+     * Content-Length=0 的 chunked 语义让 NanoHTTPD 原样透传。
+     */
+    private fun handleTestStream(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (session.method != NanoHTTPD.Method.GET) {
+            return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
+        }
+        val frames = loadTestFrames()
+        if (frames.isEmpty()) {
+            return jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, "{\"ok\":false,\"error\":\"no frames\"}")
+        }
+        val pauseMs = 250L // 4 FPS，与抽帧速率一致
+        return newChunkedResponse(
+            NanoHTTPD.Response.Status.OK,
+            "multipart/x-mixed-replace; boundary=frame",
+            object : InputStream() {
+                var frameIndex = 0
+                var buffer: ByteArray = ByteArray(0)
+                var offset = 0
+                var headerSent = false
+                var lastFrameAt = 0L
+
+                private fun nextFrame() {
+                    buffer = frames[frameIndex % frames.size]
+                    frameIndex++
+                    offset = 0
+                    headerSent = false
+                    val now = System.currentTimeMillis()
+                    val elapsed = now - lastFrameAt
+                    if (elapsed in 1 until pauseMs) {
+                        try { Thread.sleep(pauseMs - elapsed) } catch (_: InterruptedException) {}
+                    }
+                    lastFrameAt = System.currentTimeMillis()
+                }
+
+                override fun read(): Int {
+                    if (offset >= buffer.size) {
+                        nextFrame()
+                    }
+                    if (!headerSent) {
+                        // 发一帧前先补 MJPEG 帧头（boundary + Content-Type + 空行）
+                        val header = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buffer.size}\r\n\r\n"
+                        val headerBytes = header.toByteArray(Charsets.US_ASCII)
+                        val merged = ByteArray(headerBytes.size + buffer.size)
+                        headerBytes.copyInto(merged)
+                        buffer.copyInto(merged, headerBytes.size)
+                        buffer = merged
+                        offset = 0
+                        headerSent = true
+                    }
+                    val b = buffer[offset].toInt() and 0xFF
+                    offset++
+                    return b
+                }
+            }
+        )
+    }
+
+    /** assets/testframes/*.jpg 全部读进内存（共 <1MB，一次性加载可接受）。 */
+    private fun loadTestFrames(): List<ByteArray> {
+        cachedTestFrames?.let { return it }
+        val loaded = mutableListOf<ByteArray>()
+        try {
+            val names = assets.list("testframes")?.sorted() ?: emptyList()
+            for (name in names) {
+                if (!name.endsWith(".jpg")) continue
+                assets.open("testframes/$name").use { input ->
+                    loaded.add(input.readBytes())
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "加载测试帧失败", e)
+        }
+        cachedTestFrames = loaded
+        return loaded
     }
 
     // ------------------------------------------------------------------

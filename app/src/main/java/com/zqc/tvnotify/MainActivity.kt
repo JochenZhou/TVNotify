@@ -128,6 +128,9 @@ class MainActivity : Activity() {
     private lateinit var copyButton: Button
     private lateinit var resetButton: Button
     private lateinit var themeButton: Button
+    private lateinit var imageTestButton: Button
+    private lateinit var videoTestButton: Button
+    private lateinit var aboutButton: Button
     private lateinit var titleView: TextView
     private lateinit var subtitleView: TextView
     private lateinit var callInfoTitleView: TextView
@@ -265,6 +268,16 @@ class MainActivity : Activity() {
         buttonRow2.addView(resetButton, weightedParams(0))
         buttonRow2.addView(themeButton, weightedParams(1))
         leftColumn.addView(buttonRow2, linearParams(topMargin = dp(10)))
+
+        // 第三行：图片测试 / 视频测试 / 关于
+        val buttonRow3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        imageTestButton = buildButton(theme.imageTestButtonText) { showTestImageBanner() }
+        videoTestButton = buildButton(theme.videoTestButtonText) { showTestVideoBanner() }
+        aboutButton = buildButton(theme.aboutButtonText) { showAboutDialog() }
+        buttonRow3.addView(imageTestButton, weightedParams(0))
+        buttonRow3.addView(videoTestButton, weightedParams(1))
+        buttonRow3.addView(aboutButton, weightedParams(2))
+        leftColumn.addView(buttonRow3, linearParams(topMargin = dp(10)))
 
         val leftParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.25f).apply {
             rightMargin = dp(22)
@@ -661,6 +674,74 @@ class MainActivity : Activity() {
         )
         toast(if (theme.isXianxia) "长按试传：灵镜画卷显化" else "长按触发：16:9 多媒体画卷演示")
         return true
+    }
+
+    /** 图片测试：内置 1280×720 测试图（raw 资源运行时转 base64），验证静态图片渲染。 */
+    private fun showTestImageBanner() {
+        if (!Settings.canDrawOverlays(this)) {
+            toast(theme.overlayPermissionToast)
+            openOverlaySettings()
+            return
+        }
+        val base64 = try {
+            resources.openRawResource(R.raw.test_sample).use { input ->
+                android.util.Base64.encodeToString(input.readBytes(), android.util.Base64.NO_WRAP)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "读取测试图失败", e)
+            toast("测试图不可用")
+            return
+        }
+        val controller = bannerController ?: BannerController(this).also { bannerController = it }
+        controller.show(
+            BannerRequest(
+                title = if (theme.isXianxia) "画影之术" else "图片测试",
+                text = if (theme.isXianxia) "以灵力凝塑画影一幅，请君品鉴。" else "内置测试图渲染检查。",
+                durationSeconds = 10,
+                imageBase64 = base64
+            )
+        )
+    }
+
+    /**
+     * 视频测试：走本机内置 MJPEG 测试流（/{token}/stream，assets 抽帧循环）。
+     * 不依赖任何外部服务，电视断网也能测。
+     */
+    private fun showTestVideoBanner() {
+        if (!Settings.canDrawOverlays(this)) {
+            toast(theme.overlayPermissionToast)
+            openOverlaySettings()
+            return
+        }
+        val controller = bannerController ?: BannerController(this).also { bannerController = it }
+        controller.show(
+            BannerRequest(
+                title = if (theme.isXianxia) "灵镜自演" else "视频测试",
+                text = if (theme.isXianxia) "灵镜自内映照，影像循环不熄。" else "内置 MJPEG 测试流循环播放。",
+                durationSeconds = 30,
+                videoUrl = "http://127.0.0.1:${NotifyService.PORT}/${Prefs.getToken(this)}/stream"
+            )
+        )
+    }
+
+    /** 关于：应用版本、仓库、集成地址。原生 AlertDialog（本工程零 AndroidX）。 */
+    private fun showAboutDialog() {
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) {
+            "unknown"
+        }
+        val message = buildString {
+            append("玉简（TVNotify）v").append(version).append('\n')
+            append("Android TV 局域网通知横幅\n\n")
+            append("应用仓库：\nhttps://github.com/JochenZhou/TVNotify\n\n")
+            append("HA 集成：\n").append(HA_INTEGRATION_URL)
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle(if (theme.isXianxia) "简牍溯源" else "关于")
+            .setMessage(message)
+            .setPositiveButton(if (theme.isXianxia) "知道了" else "确定", null)
+            .show()
     }
 
     private fun copyCallUrl() {

@@ -317,14 +317,16 @@ class BannerController(private val context: Context) {
     @Suppress("DEPRECATION")
     private fun ensureMediaPlayer(): MediaPlayer? {
         mediaPlayer?.let { return it }
+        // 修仙主题用专属音效「传音玉简」，默认主题维持原 tvOS 和弦
+        val resId = if (Theme.current(context) == Theme.XIUXIAN) R.raw.chord_xiuxian else R.raw.chord
         val created = try {
-            MediaPlayer.create(context, R.raw.chord)
+            MediaPlayer.create(context, resId)
         } catch (e: Exception) {
             Log.w(TAG, "创建 MediaPlayer 失败", e)
             null
         }
         if (created == null) {
-            Log.w(TAG, "提示音资源不可用：R.raw.chord")
+            Log.w(TAG, "提示音资源不可用：resId=$resId")
             return null
         }
         try {
