@@ -846,10 +846,11 @@ class BannerController(private val context: Context) {
                     frames = loaded
                     status.step = "抽帧 ${loaded.size} 张"
                     if (loaded.isEmpty()) {
+                        // SAM 转换的 lambda 里不能用 return（非局部返回），这里用分支表达
                         onFailed?.invoke()
-                        return
+                    } else {
+                        mainHandler.post(tick)
                     }
-                    mainHandler.post(tick)
                 } catch (e: Throwable) {
                     status.step = "抽帧异常 ${e.javaClass.simpleName}"
                     mainHandler.post { onFailed?.invoke() }
