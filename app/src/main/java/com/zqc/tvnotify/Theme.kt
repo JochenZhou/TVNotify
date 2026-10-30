@@ -34,7 +34,7 @@ enum class Theme(val storageId: String) {
     // 设置界面文案
     // ------------------------------------------------------------------
 
-    val appTitle: String get() = if (isXianxia) "玉简 · 传音千里" else "玉简"
+    val appTitle: String get() = if (isXianxia) "玉简 · 传音" else "玉简"
     val appSubtitle: String get() =
         if (isXianxia) "灵讯横幅 · 常驻阵眼，一简传音" else "局域网通知横幅 · 电视端常驻服务"
 

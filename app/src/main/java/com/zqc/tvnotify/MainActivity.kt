@@ -611,7 +611,7 @@ class MainActivity : Activity() {
     }
 
     private fun themeToggleLabel(): String = when (theme) {
-        Theme.XIUXIAN -> "切换：默认深色"
+        Theme.XIUXIAN -> "切换：tvOS"
         Theme.DEFAULT -> "切换：修仙玉简"
     }
 

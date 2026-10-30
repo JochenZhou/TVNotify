@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -30,7 +31,8 @@ class NotifyService : Service() {
         private const val TAG = "TVNotifyService"
 
         const val PORT = 8791
-        const val CHANNEL_ID = "tvnotify_svc"
+        const val CHANNEL_ID = "tvnotify_fg_v2"
+        private const val OLD_CHANNEL_ID = "tvnotify_svc"
         private const val NOTIFICATION_ID = 8791
 
         /** 与 app/build.gradle.kts 的 versionName 保持一致；/health 与 mDNS TXT 都用它 */
@@ -140,13 +142,27 @@ class NotifyService : Service() {
             Notification.Builder(this)
         }
         val theme = Theme.current(this)
+        val largeIcon = try {
+            BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher)
+        } catch (_: Exception) {
+            null
+        }
+
         builder.setContentTitle(theme.foregroundTitle)
             .setContentText(theme.foregroundText(PORT))
             .setSmallIcon(R.drawable.ic_stat_notify)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            builder.setPriority(Notification.PRIORITY_MIN)
+            .setShowWhen(false)
+
+        if (largeIcon != null) {
+            builder.setLargeIcon(largeIcon)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder.setBadgeIconType(Notification.BADGE_ICON_NONE)
+        } else {
+            builder.setPriority(Notification.PRIORITY_LOW)
         }
         return builder.build()
     }
@@ -156,16 +172,27 @@ class NotifyService : Service() {
             return
         }
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        // 清理旧版 IMPORTANCE_MIN 渠道，避免手机残留旧渠道设置导致被归入静音栏显示小铃铛
+        try {
+            manager.deleteNotificationChannel(OLD_CHANNEL_ID)
+        } catch (_: Exception) {
+            // ignore if not existed
+        }
+
         if (manager.getNotificationChannel(CHANNEL_ID) != null) {
             return
         }
+        // 使用 IMPORTANCE_LOW：状态栏与通知栏正常展示玉简图标，静音不振动不弹窗，绝不退化为系统静音小铃铛
         val channel = NotificationChannel(
             CHANNEL_ID,
             Theme.current(this).foregroundChannelName,
-            NotificationManager.IMPORTANCE_MIN
+            NotificationManager.IMPORTANCE_LOW
         )
-        channel.description = "保持局域网通知接口常驻，通知本身不展示内容"
+        channel.description = "保持局域网通知接口常驻，接收来自 Home Assistant 的灵讯"
         channel.setShowBadge(false)
+        channel.enableLights(false)
+        channel.enableVibration(false)
+        channel.setSound(null, null)
         manager.createNotificationChannel(channel)
     }
 
