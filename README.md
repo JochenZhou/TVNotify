@@ -10,9 +10,9 @@
 
 强烈推荐配合专属 Home Assistant 自定义集成使用：
 
-👉 **集成仓库**：[ha-tvnotify (GitHub)](https://github.com/JochenZhou/ha-tvnotify)
+👉 **集成仓库**：[ha-yujian (GitHub)](https://github.com/JochenZhou/ha-yujian)
 
-- **局域网 mDNS 自动发现**：TVNotify 电视端开机后自动广播 `_tvnotify._tcp`。安装 `ha-tvnotify` 后，Home Assistant「配置 → 设备与服务」将**自动发现**局域网内的这台电视，点击「配置」即可自动绑定，**无需手动查询与填写电视 IP 及 Token**！
+- **局域网 mDNS 自动发现**：TVNotify 电视端开机后自动广播 `_tvnotify._tcp`。安装 `ha-yujian` 后，Home Assistant「配置 → 设备与服务」将**自动发现**局域网内的这台电视，点击「配置」即可自动绑定，**无需手动查询与填写电视 IP 及 Token**！
 - **原生通知实体与服务**：在 HA 自动化中通过 `notify.send_message` 或 `notify.tv_notify` 直接调用，支持标题、正文、分级着色（info / warn / error）、常驻与自定义提示音。
 - **在线状态感知**：自动监控电视端 HTTP 与悬浮窗服务在线状态。
 
@@ -291,12 +291,12 @@ HTTP 服务照常工作。
 
 ## Home Assistant 接入
 
-推荐用官方集成 **[TVNotify for Home Assistant](https://github.com/JochenZhou/ha-tvnotify)**（HACS 可装）：电视端广播 `_tvnotify._tcp.local.`，TXT 里带 token，HA 起来后**自动发现电视、自动建好配置项**，不需要手抄地址或扫码。
+推荐用官方集成 **[玉简 for Home Assistant](https://github.com/JochenZhou/ha-yujian)**（HACS 可装）：电视端广播 `_tvnotify._tcp.local.`，TXT 里带 token，HA 起来后**自动发现电视、自动建好配置项**，不需要手抄地址或扫码。
 
-[![一键添加到 HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JochenZhou&repository=ha-tvnotify&category=integration)
+[![一键添加到 HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=JochenZhou&repository=ha-yujian&category=integration)
 [![打开 Home Assistant 添加集成](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=tvnotify)
 
-**一键安装**：点上面第一个徽章 → 浏览器跳到你的 HA 实例 → 确认仓库地址 → **ADD** → HACS 里搜索 **TVNotify** → 下载 → **重启 HA**。
+**一键安装**：点上面第一个徽章 → 浏览器跳到你的 HA 实例 → 确认仓库地址 → **ADD** → HACS 里搜索 **玉简** → 下载 → **重启 HA**。
 
 点第二个徽章可直接跳到「添加集成」配置页。
 
@@ -318,7 +318,7 @@ automation:
           message: 晾晒提醒：衣服可以收了
 ```
 
-集成还带一个便捷服务 `tvnotify.tv_notify`，可以带附加参数（`duration` / `level` / `sticky` / `sound`），这些参数在自动化编辑器里是下拉框、滑块和开关，可直接点选。集成在电视端服务被系统杀掉时**自动经 ADB 拉起并重试**。细节见[集成仓库 README](https://github.com/JochenZhou/ha-tvnotify)。
+集成还带一个便捷服务 `yujian.notify`，可以带附加参数（`duration` / `level` / `sticky` / `sound`），这些参数在自动化编辑器里是下拉框、滑块和开关，可直接点选。集成在电视端服务被系统杀掉时**自动经 ADB 拉起并重试**。细节见[集成仓库 README](https://github.com/JochenZhou/ha-yujian)。
 
 ### 不用集成时：直接用 HTTP
 
