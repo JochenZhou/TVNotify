@@ -69,7 +69,7 @@
 
 ### 1. 下载 APK
 
-从仓库 [Releases](../../releases) 下载 `YuJian-release.apk`（或 `TVNotify-release.apk`），或者自己构建（见文末）。
+从仓库 [Releases](../../releases) 下载 `YuJian-release.apk`，或者自己构建（见文末）。
 
 ### 2. 安装
 

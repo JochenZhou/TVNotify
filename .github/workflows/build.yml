@@ -76,7 +76,7 @@ jobs:
       - name: Build release APK
         run: gradle assembleRelease --no-daemon --stacktrace
 
-      # 统一输出 YuJian-release.apk（同时保留 TVNotify-release.apk 别名保持向下兼容）
+      # 统一输出 YuJian-release.apk
       - name: Collect APK
         run: |
           set -euo pipefail
@@ -84,19 +84,18 @@ jobs:
           SRC=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -n 1)
           echo "Found APK: $SRC"
           cp "$SRC" dist/YuJian-release.apk
-          cp "$SRC" dist/TVNotify-release.apk
           ls -l dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: YuJian-release
-          path: dist/*.apk
+          path: dist/YuJian-release.apk
           if-no-files-found: error
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.apk
+          files: dist/YuJian-release.apk
           generate_release_notes: true
