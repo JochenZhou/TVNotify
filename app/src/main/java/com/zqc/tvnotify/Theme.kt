@@ -105,10 +105,10 @@ enum class Theme(val storageId: String) {
 
     val footerHint: String get() =
         if (isXianxia) {
-            "提示：电视重启后阵法自起；若灵光被灭，可于电脑执行\n" +
+            "提示：重启后阵法自起；推荐配合开源桌面 Aerial 的 ADB 保活守护，或执行：\n" +
                 "adb shell am startservice -n com.zqc.tvnotify/.NotifyService"
         } else {
-            "提示：电视重启后服务会自动拉起；若被系统清理，可在电脑上执行\n" +
+            "提示：重启后服务自启；推荐配合开源桌面 Aerial 的 ADB 保活守护，或执行：\n" +
                 "adb shell am startservice -n com.zqc.tvnotify/.NotifyService"
         }
 
