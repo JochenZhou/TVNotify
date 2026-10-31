@@ -1,6 +1,6 @@
-# TVNotify · 电视端局域网通知横幅
+# 玉简 (YuJian) · 电视端局域网灵讯横幅
 
-> 把小米电视（Android 6.0 / API 23）变成局域网通知屏：外部系统（Home Assistant、NAS、CI、树莓派……）发一个 HTTP POST，电视屏幕顶部就会飘出一条 tvOS 风格的横幅。
+> 把电视（Android 6.0+ / API 23+）变成局域网通知屏与传音玉简：外部系统（Home Assistant、NAS、CI、树莓派……）发一个 HTTP POST，电视屏幕顶部就会飘出一条灵动横幅（修仙玉简 / tvOS 双风格），支持 16:9 静态画卷与实时监控动态流。
 
 本项目是为「电视通知栏被裁掉、`cmd notification post` 在 API 23 上不可用」这类场景写的兜底方案：不做系统通知，直接 `WindowManager` 悬浮窗自绘。整个 App 只有两个依赖（NanoHTTPD + ZXing），不引入 AndroidX，APK 体积小到可以忽略。
 
@@ -12,8 +12,8 @@
 
 👉 **集成仓库**：[ha-yujian (GitHub)](https://github.com/JochenZhou/ha-yujian)
 
-- **局域网 mDNS 自动发现**：TVNotify 电视端开机后自动广播 `_tvnotify._tcp`。安装 `ha-yujian` 后，Home Assistant「配置 → 设备与服务」将**自动发现**局域网内的这台电视，点击「配置」即可自动绑定，**无需手动查询与填写电视 IP 及 Token**！
-- **原生通知实体与服务**：在 HA 自动化中通过 `notify.send_message` 或 `notify.tv_notify` 直接调用，支持标题、正文、分级着色（info / warn / error）、常驻与自定义提示音。
+- **局域网 mDNS 自动发现**：玉简电视端开机后自动广播 `_tvnotify._tcp`。安装 `ha-yujian` 后，Home Assistant「配置 → 设备与服务」将**自动发现**局域网内的这台电视，点击「配置」即可自动绑定，**无需手动查询与填写电视 IP 及 Token**！
+- **原生通知实体与服务**：在 HA 自动化中通过 `notify.send_message` 或 `yujian.notify` 直接调用，支持标题、正文、分级着色（info / warn / error）、常驻、16:9 静态画卷与动态实时视频流、自定义提示音。
 - **在线状态感知**：自动监控电视端 HTTP 与悬浮窗服务在线状态。
 
 ---
@@ -69,13 +69,13 @@
 
 ### 1. 下载 APK
 
-从仓库 [Releases](../../releases) 下载 `TVNotify-release.apk`，或者自己构建（见文末）。
+从仓库 [Releases](../../releases) 下载 `YuJian-release.apk`（或 `TVNotify-release.apk`），或者自己构建（见文末）。
 
 ### 2. 安装
 
 ```bash
 adb connect 192.168.1.23:5555     # 电视需先开启「开发者选项 → USB 调试 / 网络调试」
-adb install -r TVNotify-release.apk
+adb install -r YuJian-release.apk
 ```
 
 ### 3. 授予悬浮窗权限（必须）
@@ -86,7 +86,7 @@ adb install -r TVNotify-release.apk
 adb shell appops set com.zqc.tvnotify SYSTEM_ALERT_WINDOW allow
 ```
 
-也可以打开 App 点「测试通知」，会直接跳到系统授权页。
+也可以打开 App 点「测试通知」（或修仙主题下的「试传一简」），会直接跳到系统授权页。
 
 ### 4. 拉起服务（电视重启后一般不需要，开机广播会自动拉起）
 
@@ -96,7 +96,7 @@ adb shell am startservice -n com.zqc.tvnotify/.NotifyService
 
 ### 5. 拿到调用地址
 
-打开 TVNotify，界面上会显示：
+打开「玉简」，界面上会显示：
 
 ```
 Token：k7m2p9x4
@@ -285,7 +285,7 @@ binary_sensor:
 | --- | --- |
 | 服务类型 | `_tvnotify._tcp`（完整：`_tvnotify._tcp.local`） |
 | 端口 | `8791` |
-| 实例名 | `TVNotify-<token 后 4 位>`，例：`TVNotify-p9x4` |
+| 实例名 | `YuJian-<token 后 4 位>`，例：`YuJian-p9x4` |
 | TXT `version` | `1.1.0` |
 | TXT `path` | `/notify`（完整的调用路径是 `/{token}/notify`） |
 | TXT `token` | 完整 token，便于 HA 自动拼出调用地址 |
@@ -528,7 +528,7 @@ base64 -w0 local/release.keystore     # macOS: base64 -i local/release.keystore
 ## 目录结构
 
 ```
-TVNotify/
+YuJian/
 ├── .github/workflows/build.yml        # CI：Gradle 8.7 + assembleRelease + Release 挂载
 ├── app/
 │   ├── build.gradle.kts               # 签名三级降级、R8、minSdk 23

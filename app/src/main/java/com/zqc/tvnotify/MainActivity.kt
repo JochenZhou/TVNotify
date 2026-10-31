@@ -44,7 +44,7 @@ import com.google.zxing.qrcode.QRCodeWriter
  *    聚焦时触发细腻的灵光微缩放与高亮描边；
  * 3. 仙侠玉简美学浸润：支持「修仙玉简」与「现代深色」一键双向平滑切换；
  * 4. Home Assistant 极速互联：支持双模式二维码切换（HA 自动发现集成仓库 vs 原生 HTTP 符钥），
- *    明确告知安装 ha-tvnotify 后局域网自动发现，免配 IP 与 Token。
+ *    明确告知安装 ha-yujian 后局域网自动发现，免配 IP 与 Token。
  */
 class MainActivity : Activity() {
 

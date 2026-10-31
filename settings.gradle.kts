@@ -15,5 +15,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "TVNotify"
+rootProject.name = "YuJian"
 include(":app")

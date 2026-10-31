@@ -42,9 +42,16 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.HttpsURLConnection
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 /** 横幅分级。未知值统一按 [INFO] 处理，避免推送方拼错字段就整条失败。 */
 enum class BannerLevel {
@@ -399,12 +406,14 @@ class BannerController(private val context: Context) {
     private fun dismissAnimated() {
         mainHandler.removeCallbacks(hideRunnable)
         mainHandler.removeCallbacks(clearKeepScreenOnRunnable)
+        // 动画开始前即刻切断视频/图片流，避免在退场阶段继续耗费 CPU 解码帧
+        activeMediaSession?.stop()
+        activeMediaSession = null
+
         val view = bannerView ?: return
         val height = if (view.height > 0) view.height else dp(FALLBACK_HEIGHT_DP)
         val endY = -(height + dp(BANNER_TOP_MARGIN_DP)).toFloat()
         animate(view, view.translationY, endY, view.alpha, 0f, view.scaleX, 0.95f, EXIT_DURATION_MS) {
-            activeMediaSession?.stop()
-            activeMediaSession = null
             removeViewSafely(view)
             if (bannerView === view) {
                 bannerView = null
@@ -916,6 +925,84 @@ class BannerController(private val context: Context) {
         }
     }
 
+    private object SafeNetworkHelper {
+        private val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+            override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+        })
+
+        private val permissiveSslContext: SSLContext by lazy {
+            try {
+                SSLContext.getInstance("TLS").apply {
+                    init(null, trustAllCerts, SecureRandom())
+                }
+            } catch (e: Exception) {
+                SSLContext.getDefault()
+            }
+        }
+
+        private val permissiveHostnameVerifier = HostnameVerifier { _, _ -> true }
+
+        fun openConnection(
+            urlStr: String,
+            connectTimeoutMs: Int,
+            readTimeoutMs: Int,
+            userAgent: String,
+            acceptHeader: String
+        ): HttpURLConnection {
+            var currentUrl = urlStr
+            for (hop in 0..2) {
+                val url = URL(currentUrl)
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = connectTimeoutMs
+                    readTimeout = readTimeoutMs
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", userAgent)
+                    setRequestProperty("Accept", acceptHeader)
+                }
+                if (conn is HttpsURLConnection) {
+                    conn.sslSocketFactory = permissiveSslContext.socketFactory
+                    conn.hostnameVerifier = permissiveHostnameVerifier
+                }
+                val code = try {
+                    conn.responseCode
+                } catch (e: Exception) {
+                    conn.disconnect()
+                    throw e
+                }
+                if (code == HttpURLConnection.HTTP_MOVED_PERM ||
+                    code == HttpURLConnection.HTTP_MOVED_TEMP ||
+                    code == 307 || code == 308
+                ) {
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    if (!location.isNullOrBlank()) {
+                        currentUrl = if (location.startsWith("http://") || location.startsWith("https://")) {
+                            location
+                        } else {
+                            URL(url, location).toString()
+                        }
+                        continue
+                    }
+                }
+                return conn
+            }
+            val url = URL(currentUrl)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                connectTimeout = connectTimeoutMs
+                readTimeout = readTimeoutMs
+                setRequestProperty("User-Agent", userAgent)
+                setRequestProperty("Accept", acceptHeader)
+            }
+            if (conn is HttpsURLConnection) {
+                conn.sslSocketFactory = permissiveSslContext.socketFactory
+                conn.hostnameVerifier = permissiveHostnameVerifier
+            }
+            return conn
+        }
+    }
+
     private class MjpegStreamSession(
         private val videoUrl: String,
         private val targetView: ImageView,
@@ -929,12 +1016,15 @@ class BannerController(private val context: Context) {
         private var inStreamRef: InputStream? = null
         private var workerThread: Thread? = null
         private var firstFrameShown = false
+        private var sampleSize: Int = 1
+        private var sampleDetected: Boolean = false
+        private var frameCounter: Int = 0
 
         override fun start() {
             isRunning = true
             workerThread = Thread({
                 runStream()
-            }, "tvnotify-mjpeg").apply {
+            }, "yujian-mjpeg").apply {
                 isDaemon = true
                 start()
             }
@@ -942,14 +1032,13 @@ class BannerController(private val context: Context) {
 
         private fun runStream() {
             try {
-                val url = URL(videoUrl)
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 3500
-                    readTimeout = 5000
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "TVNotify/1.2.2")
-                    setRequestProperty("Accept", "multipart/x-mixed-replace, image/jpeg, */*")
-                }
+                val conn = SafeNetworkHelper.openConnection(
+                    urlStr = videoUrl,
+                    connectTimeoutMs = 3500,
+                    readTimeoutMs = 5000,
+                    userAgent = "YuJian/${NotifyService.VERSION_NAME}",
+                    acceptHeader = "multipart/x-mixed-replace, image/jpeg, */*"
+                )
                 connection = conn
                 status.step = "连接视频流"
                 conn.connect()
@@ -978,8 +1067,26 @@ class BannerController(private val context: Context) {
                         continue
                     }
                     lastRenderTime = now
+                    frameCounter++
+
+                    // 智能降采样：检测摄像头原始分辨率（如 1080p 或 4K），按目标宽高 (480x270) 下采样解码，杜绝 OOM
+                    if (!sampleDetected || frameCounter % 150 == 0) {
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(frameData, 0, frameData.size, bounds)
+                        if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                            var s = 1
+                            val reqW = 480
+                            val reqH = 270
+                            while ((bounds.outWidth / (s * 2)) >= reqW && (bounds.outHeight / (s * 2)) >= reqH) {
+                                s *= 2
+                            }
+                            sampleSize = s
+                            sampleDetected = true
+                        }
+                    }
 
                     val opts = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
                         inPreferredConfig = Bitmap.Config.RGB_565
                     }
                     val bitmap = BitmapFactory.decodeByteArray(frameData, 0, frameData.size, opts) ?: continue
@@ -1074,20 +1181,20 @@ class BannerController(private val context: Context) {
                     status.step = "${e.javaClass.simpleName}: ${e.message?.take(40) ?: ""}"
                     mainHandler.post { if (isRunning) onFailed?.invoke() }
                 }
-            }, "tvnotify-img").apply {
+            }, "yujian-img").apply {
                 isDaemon = true
                 start()
             }
         }
 
         private fun downloadImageBytes(urlStr: String): ByteArray? {
-            val url = URL(urlStr)
-            val conn = (url.openConnection() as HttpURLConnection).apply {
-                connectTimeout = 3000
-                readTimeout = 4000
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", "TVNotify/1.2.2")
-            }
+            val conn = SafeNetworkHelper.openConnection(
+                urlStr = urlStr,
+                connectTimeoutMs = 3000,
+                readTimeoutMs = 4000,
+                userAgent = "YuJian/${NotifyService.VERSION_NAME}",
+                acceptHeader = "image/*, */*"
+            )
             connection = conn
             conn.connect()
             if (conn.responseCode != 200) return null
@@ -1151,6 +1258,14 @@ class BannerController(private val context: Context) {
                 if (prevByte == 0xFF && b == 0xD9) {
                     prevByte = -1
                     return buffer.toByteArray()
+                }
+                // 网络丢包容错：若上一帧意外断裂并在遇到 EOI 前提前出现了下一帧的起始标记 SOI，直接快速同步
+                if (prevByte == 0xFF && b == 0xD8) {
+                    buffer.reset()
+                    buffer.write(0xFF)
+                    buffer.write(0xD8)
+                    prevByte = -1
+                    continue
                 }
                 prevByte = b
             }

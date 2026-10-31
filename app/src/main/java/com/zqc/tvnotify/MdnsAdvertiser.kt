@@ -433,14 +433,14 @@ class MdnsAdvertiser(
     }
 
     /**
-     * 实例名 `TVNotify-<token 后 4 位>`：多台电视在同一局域网时可以区分。
+     * 实例名 `YuJian-<token 后 4 位>`：多台电视在同一局域网时可以区分。
      * token 被重置后名字会变，旧名字的记录随下一轮公告（≤60s）淡出缓存。
      */
     private fun instanceName(): String {
         val token = currentToken()
         val suffix = if (token.length > 4) token.takeLast(4) else token
         val safe = suffix.lowercase().replace(INVALID_LABEL_CHARS, "-")
-        return if (safe.isEmpty()) "TVNotify" else "TVNotify-$safe"
+        return if (safe.isEmpty()) "YuJian" else "YuJian-$safe"
     }
 
     private fun serviceTypeFqdn(): String = "$SERVICE_TYPE.$SERVICE_DOMAIN"
