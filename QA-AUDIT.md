@@ -1,7 +1,7 @@
-# TVNotify 静态质量审计报告
+# 玉简 (YuJian) 静态质量审计报告
 
 - 审计人：QA 工程师（严过关）
-- 审计对象：`C:\Users\zhou\WorkBuddy\2026-10-28-08-58-46\TVNotify`（20 个文件）
+- 审计对象：仓库 `https://github.com/JochenZhou/YuJian`（20 个文件）
 - 审计方式：**纯静态**（Read 逐行 + Grep 跨文件 + 官方文档/API 参考交叉核对）。本机无 JDK / Gradle / Android SDK，**未执行任何编译或构建**。
 - 标注约定：`[静态确认]` = 依据代码与官方文档可确定；`[需 CI]` / `[需真机]` = 必须实际构建或上机才能最终确认。
 
@@ -291,10 +291,10 @@ val chunk = ByteArray(size)   // 此时 size <= budget <= 32768
 ### 0. 前置（一次性）
 ```bash
 adb connect 192.168.1.23:5555
-adb install -r TVNotify-release.apk
+adb install -r YuJian-release.apk
 adb shell appops set com.zqc.tvnotify SYSTEM_ALERT_WINDOW allow   # 悬浮窗权限，不给人看不到任何东西
 ```
-同时到电视「设置 → 应用 → TVNotify」里允许 **自启动**、**省电策略=无限制**（红米/MIUI TV 必做）。
+同时到电视「设置 → 应用 → 玉简」里允许 **自启动**、**省电策略=无限制**（红米/MIUI TV 必做）。
 
 ### 1. 服务是否在跑、端口是否真的监听
 ```bash

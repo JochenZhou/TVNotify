@@ -178,6 +178,9 @@ class BannerController(private val context: Context) {
     private var mediaPlayerResId: Int = 0
     private var activeMediaSession: MediaSession? = null
 
+    /** 媒体区「4 秒还没出画面」看门狗；横幅消失/被替换时必须撤销 */
+    private var mediaWatchdog: Runnable? = null
+
     fun isShowing(): Boolean = bannerView != null
 
     /**
@@ -409,6 +412,7 @@ class BannerController(private val context: Context) {
         // 动画开始前即刻切断视频/图片流，避免在退场阶段继续耗费 CPU 解码帧
         activeMediaSession?.stop()
         activeMediaSession = null
+        cancelMediaWatchdog()
 
         val view = bannerView ?: return
         val height = if (view.height > 0) view.height else dp(FALLBACK_HEIGHT_DP)
@@ -708,6 +712,8 @@ class BannerController(private val context: Context) {
         val markFailed = Runnable { showStatus(prefix + status.step) }
 
         // 看门狗：4 秒还没出画面就把最后一步显示出来，避免只看到「凝聚中…」干等
+        // 必须存下来，横幅消失时要撤销：否则它会在 4 秒后回写一条已经销毁的视图，
+        // 甚至把「新横幅」的状态行改成失败文案。
         val watchdog = Runnable {
             if (imageView.drawable == null) markFailed.run()
         }
@@ -795,6 +801,7 @@ class BannerController(private val context: Context) {
         }
 
         mainHandler.postDelayed(watchdog, 4000L)
+        mediaWatchdog = watchdog
         return frame
     }
 
@@ -925,7 +932,18 @@ class BannerController(private val context: Context) {
         }
     }
 
+    /**
+     * 局域网媒体下载专用的连接工厂。
+     *
+     * 必须关闭 HTTPS 证书校验：HA / NAS 上的摄像头快照与 MJPEG 流常是自签证书，
+     * 严格校验会让「推送方已经持有 token」的场景一律下载失败。
+     * 风险边界：URL 只来自通过 token 鉴权的 `/notify` 请求体与设置界面自测，
+     * 局域网内可信；仍打一条日志，让「为什么这里能连自签证书」有据可查。
+     */
     private object SafeNetworkHelper {
+        @Volatile
+        private var warnedInsecureTls = false
+
         private val trustAllCerts = arrayOf<TrustManager>(object : X509TrustManager {
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
             override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
@@ -962,6 +980,10 @@ class BannerController(private val context: Context) {
                     setRequestProperty("Accept", acceptHeader)
                 }
                 if (conn is HttpsURLConnection) {
+                    if (!warnedInsecureTls) {
+                        warnedInsecureTls = true
+                        Log.i(TAG, "HTTPS 媒体使用「接受自签证书」模式（局域网可信场景）")
+                    }
                     conn.sslSocketFactory = permissiveSslContext.socketFactory
                     conn.hostnameVerifier = permissiveHostnameVerifier
                 }
@@ -1131,6 +1153,11 @@ class BannerController(private val context: Context) {
         private val onLoaded: (() -> Unit)? = null,
         private val onFailed: (() -> Unit)? = null
     ) : MediaSession {
+        companion object {
+            /** 单张静态图上限 8MB：够 4K 截图，又能挡住无限流/超大文件把电视读成 OOM */
+            private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
+        }
+
         @Volatile private var isRunning = false
         private var connection: HttpURLConnection? = null
         private var workerThread: Thread? = null
@@ -1198,7 +1225,27 @@ class BannerController(private val context: Context) {
             connection = conn
             conn.connect()
             if (conn.responseCode != 200) return null
-            return conn.inputStream.use { it.readBytes() }
+            // 电视内存只有几百 MB，必须设上限：`readBytes()` 无上限，
+            // 指向长视频/挂掉的服务（无限流）时会把整个进程读成 OOM。
+            val declared = conn.headerFields["Content-Length"]?.firstOrNull()?.toLongOrNull() ?: -1L
+            if (declared > MAX_IMAGE_BYTES) {
+                Log.w(TAG, "图片过大，已放弃：${declared}B > ${MAX_IMAGE_BYTES}B")
+                return null
+            }
+            val out = ByteArrayOutputStream()
+            conn.inputStream.use { input ->
+                val buffer = ByteArray(16 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (out.size() + count > MAX_IMAGE_BYTES) {
+                        Log.w(TAG, "图片超过上限，已截断放弃：>${MAX_IMAGE_BYTES}B")
+                        return null
+                    }
+                    out.write(buffer, 0, count)
+                }
+            }
+            return out.toByteArray()
         }
 
         private fun decodeSampledBitmap(bytes: ByteArray, reqW: Int, reqH: Int): Bitmap? {
@@ -1312,6 +1359,7 @@ class BannerController(private val context: Context) {
     private fun removeBannerNow() {
         activeMediaSession?.stop()
         activeMediaSession = null
+        cancelMediaWatchdog()
         mainHandler.removeCallbacks(hideRunnable)
         mainHandler.removeCallbacks(clearKeepScreenOnRunnable)
         cancelAnimation()
@@ -1319,6 +1367,13 @@ class BannerController(private val context: Context) {
         val view = bannerView ?: return
         bannerView = null
         removeViewSafely(view)
+    }
+
+    /** 撤销媒体区看门狗，避免它对着已经移除（或被新横幅替换）的视图回写状态 */
+    private fun cancelMediaWatchdog() {
+        val watchdog = mediaWatchdog ?: return
+        mediaWatchdog = null
+        mainHandler.removeCallbacks(watchdog)
     }
 
     private fun canDrawOverlay(): Boolean = Settings.canDrawOverlays(context)

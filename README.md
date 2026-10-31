@@ -142,7 +142,7 @@ Content-Type: application/json
 
 **媒体回退链**：`video` → `image` / `image_base64`。MJPEG 流拉取失败会自动降级到静态图，绝不黑屏。
 
-**请求体上限 4MB**：`image_base64` 是内联 base64，体积会膨胀约 1/3，所以单张图片控制在 ~3MB 以内；更大的图请改用 `image` URL。
+**请求体上限 4MB**：`image_base64` 是内联 base64，体积会膨胀约 1/3，所以单张图片控制在 ~3MB 以内；更大的图请改用 `image` URL。超限会明确返回 `413`（不是被截断后报 `invalid json`）。
 
 `level` 对应的视觉效果（只改颜色，不改布局）：
 
@@ -163,6 +163,7 @@ Content-Type: application/json
 | `200` | 校验通过 | `{"ok":true}` |
 | `400` | 内容为空 | `{"ok":false,"error":"empty content"}` |
 | `400` | 请求体不是合法 JSON | `{"ok":false,"error":"invalid json"}` |
+| `413` | 请求体超过 4MB | `{"ok":false,"error":"body too large","limit":4194304}` |
 | `404` | token 不匹配或路径非法 | `{"ok":false,"error":"not found"}` |
 | `405` | 方法不是 POST | `{"ok":false,"error":"method not allowed"}` |
 
@@ -239,13 +240,13 @@ curl "http://192.168.1.23:8791/health"
 ```
 
 ```json
-{"ok":true,"version":"1.1.0","uptime":3621,"port":8791,"banner":"showing"}
+{"ok":true,"version":"1.2.12","uptime":3621,"port":8791,"banner":"showing"}
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `ok` | boolean | 恒为 `true`（能返回就说明服务活着） |
-| `version` | string | App 版本，当前 `1.1.0` |
+| `version` | string | App 版本，当前 `1.2.12` |
 | `uptime` | number | 服务启动至今的秒数（`SystemClock.elapsedRealtime` 计算，不受系统对时跳变影响） |
 | `port` | number | 监听端口，固定 `8791` |
 | `banner` | string | `showing` 表示横幅正在显示，`idle` 表示没有横幅 |
@@ -257,7 +258,7 @@ HA 里可以这样用：
 ```yaml
 binary_sensor:
   - platform: rest
-    name: TVNotify 在线
+    name: 玉简在线
     resource: "http://192.168.1.23:8791/health"
     value_template: "{{ value_json.ok }}"
     scan_interval: 60

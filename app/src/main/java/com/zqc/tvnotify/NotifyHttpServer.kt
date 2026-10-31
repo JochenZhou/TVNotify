@@ -190,12 +190,20 @@ class NotifyHttpServer(
         }
 
         val body = readRequestBody(session)
-        if (body.isEmpty()) {
+        // 超限必须显式回 413：继续用截断后的字节去解析，只会得到「invalid json」，
+        // 推送方会误以为自己 JSON 写错了（实际是图片太大），排查成本极高。
+        if (body.tooLarge) {
+            return jsonResponse(
+                NanoHTTPD.Response.Status.PAYLOAD_TOO_LARGE,
+                "{\"ok\":false,\"error\":\"body too large\",\"limit\":$MAX_BODY_BYTES}"
+            )
+        }
+        if (body.text.isEmpty()) {
             return jsonResponse(NanoHTTPD.Response.Status.BAD_REQUEST, EMPTY_CONTENT_BODY)
         }
 
         val payload = try {
-            JSONObject(body)
+            JSONObject(body.text)
         } catch (e: Exception) {
             Log.w(TAG, "请求体不是合法 JSON", e)
             return jsonResponse(
@@ -270,6 +278,7 @@ class NotifyHttpServer(
         }
         // 本接口不读参数，但必须把请求体从 socket 里读掉：
         // 否则 keep-alive 连接上的下一个请求会从错的字节位置开始解析。
+        @Suppress("UNUSED_EXPRESSION")
         readRequestBody(session)
         val dismissed = try {
             onDismiss()
@@ -314,8 +323,11 @@ class NotifyHttpServer(
      * 客户端不带 charset 时可能拿到 US-ASCII 甚至 null，中文会变乱码或直接 NPE。
      *
      * 支持两种传输方式：常规的 Content-Length，以及流式客户端用的 chunked。
+     *
+     * 返回 [BodyRead]：超过 [MAX_BODY_BYTES] 时 `tooLarge=true`，由调用方回 413。
+     * 无论是否超限，都会把 socket 里的剩余字节读掉，否则 keep-alive 的下一个请求会错位。
      */
-    private fun readRequestBody(session: NanoHTTPD.IHTTPSession): String {
+    private fun readRequestBody(session: NanoHTTPD.IHTTPSession): BodyRead {
         val transferEncoding = (session.headers["transfer-encoding"] ?: "").lowercase()
         if (transferEncoding.contains("chunked")) {
             // curl -H "Transfer-Encoding: chunked" 之类的客户端不发 Content-Length
@@ -323,8 +335,9 @@ class NotifyHttpServer(
         }
         val declaredLength = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
         if (declaredLength <= 0L) {
-            return ""
+            return BodyRead("", false)
         }
+        val tooLarge = declaredLength > MAX_BODY_BYTES.toLong()
         val readLimit = minOf(declaredLength, MAX_BODY_BYTES.toLong()).toInt()
         val buffer = ByteArray(readLimit)
         var read = 0
@@ -351,14 +364,15 @@ class NotifyHttpServer(
             Log.w(TAG, "读取请求体失败", e)
         }
         if (read <= 0) {
-            return ""
+            return BodyRead("", tooLarge)
         }
-        return String(buffer, 0, read, Charsets.UTF_8).trim()
+        return BodyRead(String(buffer, 0, read, Charsets.UTF_8).trim(), tooLarge)
     }
 
     /** 最小 chunked 解码：<hex 长度>[;扩展]\r\n 数据 \r\n ... 0\r\n\r\n */
-    private fun readChunkedBody(session: NanoHTTPD.IHTTPSession): String {
+    private fun readChunkedBody(session: NanoHTTPD.IHTTPSession): BodyRead {
         val output = ByteArrayOutputStream()
+        var tooLarge = false
         try {
             val input = session.inputStream
             while (true) {
@@ -383,6 +397,7 @@ class NotifyHttpServer(
                 val budget = MAX_BODY_BYTES - output.size()
                 if (size > budget) {
                     Log.w(TAG, "chunked 请求体超过上限，已截断")
+                    tooLarge = true
                     break
                 }
                 val chunk = ByteArray(size)
@@ -400,7 +415,7 @@ class NotifyHttpServer(
         } catch (e: Exception) {
             Log.w(TAG, "解析 chunked 请求体失败", e)
         }
-        return String(output.toByteArray(), Charsets.UTF_8).trim()
+        return BodyRead(String(output.toByteArray(), Charsets.UTF_8).trim(), tooLarge)
     }
 
     private fun readAsciiLine(input: InputStream): String? {
@@ -426,6 +441,14 @@ class NotifyHttpServer(
         return response
     }
 }
+
+/**
+ * 请求体读取结果。
+ *
+ * [tooLarge] 为 true 时 [text] 只是被截断的前缀，**不要**拿去解析 JSON：
+ * 那样只会得到「invalid json」，把「图片太大」误报成「JSON 写错」。
+ */
+private class BodyRead(val text: String, val tooLarge: Boolean)
 
 private const val EMPTY_CONTENT_BODY = "{\"ok\":false,\"error\":\"empty content\"}"
 private const val NOT_FOUND_BODY = "{\"ok\":false,\"error\":\"not found\"}"
