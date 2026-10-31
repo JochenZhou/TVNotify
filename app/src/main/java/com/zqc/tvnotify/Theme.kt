@@ -84,7 +84,28 @@ enum class Theme(val storageId: String) {
     val resetButtonText: String get() = if (isXianxia) "重铸符钥" else "重置 Token"
     val imageTestButtonText: String get() = if (isXianxia) "试显画影" else "图片测试"
     val videoTestButtonText: String get() = if (isXianxia) "试演灵镜" else "视频测试"
+    val ttsTestButtonText: String get() = if (isXianxia) "灵音试诵" else "语音播报"
+    val historyButtonText: String get() = if (isXianxia) "传音简录" else "通知历史"
     val aboutButtonText: String get() = if (isXianxia) "简牍溯源" else "关于"
+
+    fun positionDisplayName(rawPosition: String): String = when (rawPosition.lowercase()) {
+        "top" -> if (isXianxia) "顶部天幕" else "顶部居中"
+        "top-right" -> if (isXianxia) "右上画中画" else "右上画中画"
+        "bottom" -> if (isXianxia) "底部地煞" else "底部居中"
+        "bottom-right" -> if (isXianxia) "右下画中画" else "右下画中画"
+        "top-left" -> if (isXianxia) "左上画中画" else "左上画中画"
+        "bottom-left" -> if (isXianxia) "左下画中画" else "左下画中画"
+        else -> if (isXianxia) "顶部天幕" else "顶部居中"
+    }
+
+    fun positionButtonText(rawPosition: String): String =
+        (if (isXianxia) "方位：" else "位置：") + positionDisplayName(rawPosition)
+
+    fun muteButtonText(isMuted: Boolean): String = if (isMuted) {
+        if (isXianxia) "闭关免扰 (静音)" else "静音模式 (开启)"
+    } else {
+        if (isXianxia) "灵音畅通 (发声)" else "提示声音 (开启)"
+    }
 
     val overlayPermissionToast: String get() =
         if (isXianxia) "施法前请先授予「显示在其他应用上层」之权" else "请先允许「显示在其他应用上层」权限"

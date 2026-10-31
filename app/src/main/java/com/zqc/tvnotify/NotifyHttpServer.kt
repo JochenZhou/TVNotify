@@ -1,5 +1,6 @@
 package com.zqc.tvnotify
 
+import android.content.Context
 import android.util.Log
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
@@ -7,25 +8,19 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 
 /**
- * 极简局域网通知接口。
+ * 局域网通知接口与内置 Web 控制台服务。
  *
  * 路由：
- * - `GET  /health`                —— 健康探活，唯一不需要 token 的路径（供 HA availability 用）
+ * - `GET  /health`                —— 健康探活，免 token（供 HA availability 与状态查询）
+ * - `GET  /{token}` 或 `/{token}/ui` —— 内置移动端/大屏 Web 控制台（发简、消散、查历史、改配置）
  * - `POST /{token}/notify`        —— 推送横幅
  * - `POST /{token}/dismiss`       —— 关闭当前横幅（幂等）
- *
- * 契约：
- * - 路径非法或 token 不匹配 -> 404（刻意不用 403，避免外部系统据此判断 token 是否存在）
- * - 方法不对 -> 405
- * - title/text 去空白后全空 -> 400 {"ok":false,"error":"empty content"}
- * - 通过 -> 200
- *
- * token 通过 [tokenProvider] 每次请求实时读取，所以「重置 Token」后立刻生效，
- * 无需重启服务、也不会出现缓存与 SharedPreferences 不一致。
- *
- * 本轮不做消息队列：新通知仍然直接替换旧通知。
+ * - `GET  /{token}/history`       —— 获取最近 20 条传音简录
+ * - `POST /{token}/config`        —— 实时调整闭关免扰（静音）与默认方位
+ * - `GET  /{token}/stream`        —— 内置测试 MJPEG 流
  */
 class NotifyHttpServer(
+    private val context: Context,
     private val advertisedPort: Int,
     private val versionName: String,
     private val tokenProvider: () -> String,
@@ -39,36 +34,30 @@ class NotifyHttpServer(
     companion object {
         private const val TAG = "TVNotifyHttp"
 
-        /** 测试流抽帧的内存缓存，懒加载一次 */
         @Volatile
         private var cachedTestFrames: List<ByteArray>? = null
 
         private const val JSON_MIME = "application/json; charset=utf-8"
+        private const val HTML_MIME = "text/html; charset=utf-8"
         private const val ROUTE_NOTIFY = "notify"
         private const val ROUTE_DISMISS = "dismiss"
         private const val ROUTE_HEALTH = "health"
         private const val ROUTE_STREAM = "stream"
+        private const val ROUTE_HISTORY = "history"
+        private const val ROUTE_CONFIG = "config"
+        private const val ROUTE_UI = "ui"
 
         private const val DEFAULT_DURATION_SEC = 5
         private const val MIN_DURATION_SEC = 1
         private const val MAX_DURATION_SEC = 30
 
-        /**
-         * 请求体上限。
-         *
-         * 原值 32KB 只够纯文字通知；`image_base64` 是 base64 内联图片，
-         * 一张手机照片（1280×720 JPEG ≈ 100KB）base64 后就有 140KB，
-         * 会被截断成非法 JSON。这里放到 4MB：够传 2~3MB 的原图，
-         * 同时仍能挡住恶意超长请求（电视内存有限，不能无上限）。
-         */
         private const val MAX_BODY_BYTES = 4 * 1024 * 1024
     }
 
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         val segments = splitPath(session.uri)
 
-        // /health 是单段路径且不带 token，必须先于「两段式 token 校验」处理：
-        // 它与 /{token}/notify 的段数不同（1 段 vs 2 段），天然不会冲突。
+        // /health 是单段路径且不带 token
         if (segments.size == 1 && segments[0] == ROUTE_HEALTH) {
             if (session.method != NanoHTTPD.Method.GET) {
                 return jsonResponse(
@@ -79,33 +68,102 @@ class NotifyHttpServer(
             return jsonResponse(NanoHTTPD.Response.Status.OK, buildHealthBody())
         }
 
-        // 其余路由都是 /{token}/{action} 两段式；token 不匹配一律 404，不泄露任何信息
+        // 其余路由均需校验 token
         val token = tokenProvider()
-        if (segments.size != 2 || !segments[0].equals(token, ignoreCase = false)) {
+        if (segments.isEmpty() || !segments[0].equals(token, ignoreCase = false)) {
             return jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
         }
 
-        return when (segments[1]) {
+        // GET /{token} 单段路径直达 Web 控制台
+        if (segments.size == 1) {
+            return handleWebConsole()
+        }
+
+        return when (segments[1].lowercase()) {
+            ROUTE_UI -> handleWebConsole()
             ROUTE_NOTIFY -> handleNotify(session)
             ROUTE_DISMISS -> handleDismiss(session)
             ROUTE_STREAM -> handleTestStream(session)
+            ROUTE_HISTORY -> handleHistory(session)
+            ROUTE_CONFIG -> handleConfig(session)
             else -> jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, NOT_FOUND_BODY)
         }
     }
 
     // ------------------------------------------------------------------
-    // GET /{token}/stream —— 内置测试 MJPEG 流（assets 抽帧循环）
+    // GET /{token} —— 内置单页 Web 控制台
     // ------------------------------------------------------------------
 
-    /**
-     * 把 assets/testframes/ 里的抽帧循环成 MJPEG 流。
-     *
-     * 用途：设置界面的「视频测试」按钮，不再依赖外部流地址，开箱即测。
-     * 实现要点：MJPEG 客户端（本 App 的 MjpegStreamSession）按 SOI/EOI 边界
-     * 找帧、不看 Content-Type，所以必须保证一个 chunk 恰好是一帧完整 JPEG，
-     * 且不能使用 chunked 之外的分帧方式。这里每帧一个 write()，靠
-     * Content-Length=0 的 chunked 语义让 NanoHTTPD 原样透传。
-     */
+    private fun handleWebConsole(): NanoHTTPD.Response {
+        val ip = NetUtils.localIpv4()
+        val isMuted = Prefs.isMuted(context)
+        val defaultPos = Prefs.getBannerPosition(context)
+        val html = WebConsoleHtml.render(
+            token = tokenProvider(),
+            version = versionName,
+            ip = ip,
+            port = advertisedPort,
+            isMuted = isMuted,
+            defaultPosition = defaultPos
+        )
+        val response = NanoHTTPD.newFixedLengthResponse(
+            NanoHTTPD.Response.Status.OK,
+            HTML_MIME,
+            html
+        )
+        response.addHeader("Cache-Control", "no-store")
+        return response
+    }
+
+    // ------------------------------------------------------------------
+    // GET /{token}/history —— 获取最近 20 条传音简录
+    // ------------------------------------------------------------------
+
+    private fun handleHistory(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (session.method != NanoHTTPD.Method.GET) {
+            return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
+        }
+        val array = NotifyHistory.toJsonArray(context)
+        return jsonResponse(NanoHTTPD.Response.Status.OK, array.toString())
+    }
+
+    // ------------------------------------------------------------------
+    // POST /{token}/config —— 调整免扰与默认方位
+    // ------------------------------------------------------------------
+
+    private fun handleConfig(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (session.method != NanoHTTPD.Method.POST) {
+            return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
+        }
+        val body = readRequestBody(session)
+        if (body.text.isNotEmpty()) {
+            try {
+                val json = JSONObject(body.text)
+                if (json.has("muted")) {
+                    Prefs.setMuted(context, json.getBoolean("muted"))
+                }
+                if (json.has("position")) {
+                    val pos = json.getString("position").trim()
+                    if (pos.isNotEmpty()) {
+                        Prefs.setBannerPosition(context, pos)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "解析配置失败", e)
+            }
+        }
+        val muted = Prefs.isMuted(context)
+        val position = Prefs.getBannerPosition(context)
+        return jsonResponse(
+            NanoHTTPD.Response.Status.OK,
+            "{\"ok\":true,\"muted\":$muted,\"position\":\"$position\"}"
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // GET /{token}/stream —— 内置测试 MJPEG 流
+    // ------------------------------------------------------------------
+
     private fun handleTestStream(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         if (session.method != NanoHTTPD.Method.GET) {
             return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
@@ -114,7 +172,7 @@ class NotifyHttpServer(
         if (frames.isEmpty()) {
             return jsonResponse(NanoHTTPD.Response.Status.NOT_FOUND, "{\"ok\":false,\"error\":\"no frames\"}")
         }
-        val pauseMs = 250L // 4 FPS，与抽帧速率一致
+        val pauseMs = 250L
         return newChunkedResponse(
             NanoHTTPD.Response.Status.OK,
             "multipart/x-mixed-replace; boundary=frame",
@@ -143,7 +201,6 @@ class NotifyHttpServer(
                         nextFrame()
                     }
                     if (!headerSent) {
-                        // 发一帧前先补 MJPEG 帧头（boundary + Content-Type + 空行）
                         val header = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buffer.size}\r\n\r\n"
                         val headerBytes = header.toByteArray(Charsets.US_ASCII)
                         val merged = ByteArray(headerBytes.size + buffer.size)
@@ -161,7 +218,6 @@ class NotifyHttpServer(
         )
     }
 
-    /** assets/testframes 目录下的 jpg 全部读进内存（共 <1MB，一次性加载可接受）。 */
     private fun loadTestFrames(): List<ByteArray> {
         cachedTestFrames?.let { return it }
         val loaded = mutableListOf<ByteArray>()
@@ -190,8 +246,6 @@ class NotifyHttpServer(
         }
 
         val body = readRequestBody(session)
-        // 超限必须显式回 413：继续用截断后的字节去解析，只会得到「invalid json」，
-        // 推送方会误以为自己 JSON 写错了（实际是图片太大），排查成本极高。
         if (body.tooLarge) {
             return jsonResponse(
                 NanoHTTPD.Response.Status.PAYLOAD_TOO_LARGE,
@@ -219,7 +273,6 @@ class NotifyHttpServer(
         val imageBase64 = payload.optString("image_base64", payload.optString("imageBase64", "")).trim()
         val videoUrl = payload.optString("video", payload.optString("videoUrl", "")).trim()
 
-        // 文字与媒体全空才拒绝：只推一张图/一段流（无文案）也是合法用法
         val hasAnyContent = title.isNotEmpty() || text.isNotEmpty() ||
                 imageUrl.isNotEmpty() || imageBase64.isNotEmpty() ||
                 videoUrl.isNotEmpty()
@@ -234,9 +287,7 @@ class NotifyHttpServer(
         }
         val duration = rawDuration.coerceIn(MIN_DURATION_SEC, MAX_DURATION_SEC)
 
-        // level 未知值按 info 处理而不是 400：推送方模板里多写个 "notice" 不该让整条通知发不出去
         val level = BannerLevel.fromRaw(payload.optString("level", ""))
-        // sticky / sound 缺省值分别 false / true，optBoolean 内部已处理 JSON null
         val sticky = payload.optBoolean("sticky", false)
         val sound = payload.optBoolean("sound", true)
         val rawMaxDuration = if (payload.isNull("maxDuration")) {
@@ -244,6 +295,51 @@ class NotifyHttpServer(
         } else {
             payload.optInt("maxDuration", BannerRequest.DEFAULT_MAX_DURATION_SEC)
         }
+
+        // 新增扩展参数
+        val id = payload.optString("id", "").trim().takeIf { it.isNotEmpty() }
+        val posRaw = payload.optString("position", "").trim()
+        val position = if (posRaw.isNotEmpty()) BannerPosition.fromRaw(posRaw) else null
+
+        val ttsVal: String? = when {
+            payload.has("tts") -> {
+                if (payload.optBoolean("tts", false)) {
+                    "true"
+                } else {
+                    payload.optString("tts", "").trim().takeIf { it.isNotEmpty() && !it.equals("false", true) }
+                }
+            }
+            else -> null
+        }
+
+        val rawInterval = if (!payload.isNull("image_interval")) {
+            payload.optInt("image_interval", 0)
+        } else if (!payload.isNull("imageInterval")) {
+            payload.optInt("imageInterval", 0)
+        } else {
+            0
+        }
+        val imageIntervalMs = if (rawInterval in 1..10) rawInterval * 1000 else rawInterval
+
+        val queue = payload.optBoolean("queue", false)
+
+        // 记入传音简录（历史记录）
+        val historyId = id ?: System.currentTimeMillis().toString()
+        val effectivePos = (position ?: BannerPosition.fromRaw(Prefs.getBannerPosition(context))).raw
+        NotifyHistory.record(
+            context,
+            NotifyHistoryItem(
+                id = historyId,
+                timestamp = System.currentTimeMillis(),
+                title = title,
+                text = text,
+                level = level.name.lowercase(),
+                position = effectivePos,
+                hasMedia = imageUrl.isNotEmpty() || imageBase64.isNotEmpty() || videoUrl.isNotEmpty(),
+                sticky = sticky,
+                tts = ttsVal
+            )
+        )
 
         onNotify(
             BannerRequest(
@@ -256,7 +352,12 @@ class NotifyHttpServer(
                 sound = sound,
                 imageUrl = if (imageUrl.isNotEmpty()) imageUrl else null,
                 imageBase64 = if (imageBase64.isNotEmpty()) imageBase64 else null,
-                videoUrl = if (videoUrl.isNotEmpty()) videoUrl else null
+                videoUrl = if (videoUrl.isNotEmpty()) videoUrl else null,
+                id = id,
+                position = position,
+                tts = ttsVal,
+                imageIntervalMs = imageIntervalMs,
+                queue = queue
             )
         )
         return jsonResponse(NanoHTTPD.Response.Status.OK, "{\"ok\":true}")
@@ -266,18 +367,10 @@ class NotifyHttpServer(
     // POST /{token}/dismiss
     // ------------------------------------------------------------------
 
-    /**
-     * 关闭当前横幅。
-     *
-     * 幂等是硬要求：HA 自动化可能重复触发、或横幅已按 maxDuration 自动消失后再来一次，
-     * 这些情况都必须返回 200 + dismissed=false，绝不能 404/500，否则调用方会误判为故障。
-     */
     private fun handleDismiss(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         if (session.method != NanoHTTPD.Method.POST) {
             return jsonResponse(NanoHTTPD.Response.Status.METHOD_NOT_ALLOWED, METHOD_NOT_ALLOWED_BODY)
         }
-        // 本接口不读参数，但必须把请求体从 socket 里读掉：
-        // 否则 keep-alive 连接上的下一个请求会从错的字节位置开始解析。
         @Suppress("UNUSED_EXPRESSION")
         readRequestBody(session)
         val dismissed = try {
@@ -299,38 +392,26 @@ class NotifyHttpServer(
     private fun buildHealthBody(): String {
         val uptime = uptimeSecondsProvider().coerceAtLeast(0L)
         val banner = if (bannerVisibleProvider()) "showing" else "idle"
-        // versionName 来自代码常量（只含数字与点），无需 JSON 转义
+        val muted = Prefs.isMuted(context)
+        val pos = Prefs.getBannerPosition(context)
         return "{\"ok\":true,\"version\":\"$versionName\",\"uptime\":$uptime," +
-                "\"port\":$advertisedPort,\"banner\":\"$banner\"}"
+                "\"port\":$advertisedPort,\"banner\":\"$banner\",\"muted\":$muted,\"position\":\"$pos\"}"
     }
 
     // ------------------------------------------------------------------
-    // 请求体读取（已通过 v1.0.0 审计，本轮未改动）
+    // 请求体读取
     // ------------------------------------------------------------------
 
     private fun splitPath(uri: String?): List<String> {
         if (uri.isNullOrEmpty()) {
             return emptyList()
         }
-        // 忽略首尾与重复斜杠，容忍 /token/notify 与 /token/notify/ 两种写法
         return uri.split('/').filter { it.isNotEmpty() }
     }
 
-    /**
-     * 手动读取请求体。
-     *
-     * 不用 NanoHTTPD 自带的 parseBody：它会用 ContentType 里声明的 charset 解码，
-     * 客户端不带 charset 时可能拿到 US-ASCII 甚至 null，中文会变乱码或直接 NPE。
-     *
-     * 支持两种传输方式：常规的 Content-Length，以及流式客户端用的 chunked。
-     *
-     * 返回 [BodyRead]：超过 [MAX_BODY_BYTES] 时 `tooLarge=true`，由调用方回 413。
-     * 无论是否超限，都会把 socket 里的剩余字节读掉，否则 keep-alive 的下一个请求会错位。
-     */
     private fun readRequestBody(session: NanoHTTPD.IHTTPSession): BodyRead {
         val transferEncoding = (session.headers["transfer-encoding"] ?: "").lowercase()
         if (transferEncoding.contains("chunked")) {
-            // curl -H "Transfer-Encoding: chunked" 之类的客户端不发 Content-Length
             return readChunkedBody(session)
         }
         val declaredLength = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
@@ -350,7 +431,6 @@ class NotifyHttpServer(
                 }
                 read += count
             }
-            // 超出上限的字节必须从 socket 读掉，否则 keep-alive 的后续请求会错位
             var remaining = declaredLength - read
             val discard = ByteArray(512)
             while (remaining > 0L) {
@@ -369,7 +449,6 @@ class NotifyHttpServer(
         return BodyRead(String(buffer, 0, read, Charsets.UTF_8).trim(), tooLarge)
     }
 
-    /** 最小 chunked 解码：<hex 长度>[;扩展]\r\n 数据 \r\n ... 0\r\n\r\n */
     private fun readChunkedBody(session: NanoHTTPD.IHTTPSession): BodyRead {
         val output = ByteArrayOutputStream()
         var tooLarge = false
@@ -380,8 +459,6 @@ class NotifyHttpServer(
                 val sizeText = sizeLine.substringBefore(';').trim()
                 val size = sizeText.toIntOrNull(16) ?: break
                 if (size <= 0) {
-                    // 末块（"0"+CRLF）：把 trailer 一直吞到空行为止，最多 8 行，
-                    // 防止畸形输入让我们在没有空行时死等后续字节。
                     var trailers = 0
                     while (trailers < 8) {
                         val line = readAsciiLine(input) ?: break
@@ -392,8 +469,6 @@ class NotifyHttpServer(
                     }
                     break
                 }
-                // 先算「剩余预算」再分配：若直接写 output.size() + size，size 接近 Int.MAX 时
-                // 会整型溢出成负数从而绕过上限检查，随后 ByteArray(size) 直接 OOM（Error 无法被 catch Exception 捕获）
                 val budget = MAX_BODY_BYTES - output.size()
                 if (size > budget) {
                     Log.w(TAG, "chunked 请求体超过上限，已截断")
@@ -410,7 +485,7 @@ class NotifyHttpServer(
                     read += count
                 }
                 output.write(chunk, 0, read)
-                readAsciiLine(input) // 消费块尾的 CRLF
+                readAsciiLine(input)
             }
         } catch (e: Exception) {
             Log.w(TAG, "解析 chunked 请求体失败", e)
@@ -442,12 +517,6 @@ class NotifyHttpServer(
     }
 }
 
-/**
- * 请求体读取结果。
- *
- * [tooLarge] 为 true 时 [text] 只是被截断的前缀，**不要**拿去解析 JSON：
- * 那样只会得到「invalid json」，把「图片太大」误报成「JSON 写错」。
- */
 private class BodyRead(val text: String, val tooLarge: Boolean)
 
 private const val EMPTY_CONTENT_BODY = "{\"ok\":false,\"error\":\"empty content\"}"

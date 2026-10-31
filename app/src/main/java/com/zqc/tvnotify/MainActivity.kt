@@ -2,6 +2,7 @@ package com.zqc.tvnotify
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -38,19 +39,19 @@ import com.google.zxing.qrcode.QRCodeWriter
  * 电视端设置与大屏仪表盘界面：全部基于 Android Framework View 纯代码构建。
  *
  * 优化特性：
- * 1. 电视横屏双栏排版：左侧状态与操作控制台，右侧灵石符印二维码与快速互联卡片，
- *    在 1080p 电视大屏上免上下滚动，一览无余；
+ * 1. 电视横屏双栏排版：左侧控制台与三大功能操作排，右侧灵石符印二维码与快速互联卡片，
+ *    在 1080p 电视大屏上一屏尽显；
  * 2. 遥控器友好交互：遥控器方向键（D-Pad）在各卡片与按钮间平滑流转，
  *    聚焦时触发细腻的灵光微缩放与高亮描边；
  * 3. 仙侠玉简美学浸润：支持「修仙玉简」与「现代深色」一键双向平滑切换；
- * 4. Home Assistant 极速互联：支持双模式二维码切换（HA 自动发现集成仓库 vs 原生 HTTP 符钥），
- *    明确告知安装 ha-yujian 后局域网自动发现，免配 IP 与 Token。
+ * 4. 丰富调控：内置原生 TTS 语音试诵、传音简录历史回看、默认显形方位快捷切换、闭关免扰（静音）模式，
+ *    并提供手机扫码直接打开单页 Web 控制台。
  */
 class MainActivity : Activity() {
 
     enum class QrTab {
         HA_INTEGRATION,
-        TOKEN_URL
+        WEB_CONSOLE
     }
 
     companion object {
@@ -74,43 +75,22 @@ class MainActivity : Activity() {
             "U1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3" +
             "uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDiqKK2" +
             "oE0yDTbSW8tTI84f597AAhsDOO3Pb06GtDjnPktpcxaK15ZLCJQ/9kB4icCRLpip9s9j7HB9qi+2" +
-            "aZ/0CP8AyZagSqN7Rf4f5mbRWl9s0z/oEf8Aky1H2zTP+gR/5MtQHPL+V/h/mZtFaX2zTP8AoEf+" +
-            "TLUfbNM/6BH/AJMtQHPL+V/h/mZtFaX2zTP+gR/5MtR9s0z/AKBH/ky1Ac8v5X+H+Zm0VpfbNM/6" +
-            "BH/ky1H2zTP+gR/5MtQHPL+V/h/mZtFaX2zTP+gR/wCTLUfbNM/6BH/ky1Ac8v5X+H+Zm0VpfbNM" +
-            "/6BH/ky1SxSWEql/7ICRA4Mj3TBR7Z7n2GT7UA6jW8X+H+ZkUVuIulXS3SW1kVaK3eTzPMYjcPQH" +
-            "qPc4+lYdA4T5ulgrSvv+QJpn/bX/ANCFZtaV9/yBNM/7a/8AoQoFP4o+v6MoRTSQsWicqSMH0I9C" +
-            "O49jU2+3n/1i+RIf40GUP1Xt9R+C1WopluKepNLbSRKHwHiJwJEOVPtnsfY4PtUNPimkhYtE5UkY" +
-            "PoR6Edx7Gpt9vP8A6xfIkP8AGgyh+q9vqPwWkK7W5WoqaW2kiUPgPETgSIcqfbPY+xwfaoaZSaew" +
-            "UUUUAFTRW0kql8BIgcGRzhR7Z7n2GT7UA2luQ1NFbSSqXwEiBwZHOFHtnufYZPtT99vB/q18+Qfx" +
-            "uMIPovf6n8VqGWaSZg0rliBgegHoB2HsKCbt7E2+3g/1a+fIP43GEH0Xv9T+K1DLNJMwaVyxAwPQ" +
-            "D0A7D2FMooGopamlo3/L/wD9ecn9Kza0tG/5f/8Arzk/pWbSIj8cvkFaV9/yBNM/7a/+hCs2tK+/" +
-            "5Ammf9tf/QhQE/ij6/ozNooopmgUVqaFNJHcXMSEBZbS43/KMkCFzjPXr/IVpTru0pUhimeAQwFF" +
-            "bmKWQldyqBg78lskHOAR6Uh2OcimkhYtE5UkYPoR6Edx7Gpt9vP/AKxfIkP8aDKH6r2+o/Ba2rog" +
-            "/sF2l85YzbQrAhA8rzAVyVOeWID544JPWqN9aXMmlaZPHbyvClq26RUJVf30vU9KBOJQltpIlD4D" +
-            "xE4EiHKn2z2PscH2qGutmmZdT1K5Vyp069nkOD95WJKg+o3qP++6brMct1ZRPJJfxx/ZoGLFMW3+" +
-            "qX/axnJ/hH0BNFxO8VqcpU0VtJKpfASIHBkc4Ue2e59hk+1dXptzcRRaGpuZrlJNR2FjKdgH7rAw" +
-            "D+IDY75WqaNqH9oO0w1O4doCF8xTDMg3DJiGW6dwOxPTrRcfxbGHvt4P9WvnyD+NxhB9F7/U/itQ" +
-            "yzSTMGlcsQMD0A9AOw9hXQtdXltJrMcd9P8ALbI4KsUIYyRZyAeG5IPvmucJLEliSTySe9AcqQlF" +
-            "FFMAooooA0tG/wCX/wD685P6Vm1paN/y/wD/AF5yf0rNpGcfjl8grSvv+QJpn/bX/wBCFZtaV9/y" +
-            "BNM/7a/+hCgJ/FH1/RmbRRRTNAooqaK2klUvgJEDgyOcKPbPc+wyfagG0tyGporaSVS+AkQODI5w" +
-            "o9s9z7DJ9qfvt4P9WvnyD+NxhB9F7/U/itQyzSTMGlcsQMD0A9AOw9hQTdvYm328H+rXz5B/G4wg" +
-            "+i9/qfxWoZZpJmDSuWIGB6AegHYewplFA1FLUfFNJCxaJypIwfQj0I7j2NTb7ef/AFi+RIf40GUP" +
-            "1Xt9R+C1WooBxT1JpbaSJQ+A8ROBIhyp9s9j7HB9qhp8U0kLFonKkjB9CPQjuPY1Nvt5/wDWL5Eh" +
-            "/jQZQ/Ve31H4LSFdrcrUVNLbSRKHwHiJwJEOVPtnsfY4PtUNMpNPYKKKKANLRv8Al/8A+vOT+lZt" +
-            "aWjf8v8A/wBecn9KzaRnH45fIK0r7/kCaZ/21/8AQhWbW01lcXmj6cIIywQSlj2Ubv8APA5oFVaT" +
-            "i33/AEZi1NFbSSqXwEiBwZHOFHtnufYZPtVz7FLB/q7C4nkH8bwsEH0Xv9T+K1DLa6lMwaW1uWIG" +
-            "B+6bAHoBjgewoH7RPZjN9vB/q18+QfxuMIPovf6n8VqGWaSZg0rliBgegHoB2HsKm/s++/587j/v" +
-            "03+FH9n33/Pncf8Afpv8KBpwWtytRVn+z77/AJ87j/v03+FH9n33/Pncf9+m/wAKY+ePcrUVZ/s+" +
-            "+/587j/v03+FH9n33/Pncf8Afpv8KA549ytRVn+z77/nzuP+/Tf4Uf2fff8APncf9+m/woDnj3K1" +
-            "FWf7Pvv+fO4/79N/hR/Z99/z53H/AH6b/CgOePchimkhYtE5UkYPoR6Edx7Gpt9vP/rF8iQ/xoMo" +
-            "fqvb6j8Fo/s++/587j/v03+FH9n33/Pncf8Afpv8KQm4PW4yW2kiUPgPETgSIcqfbPY+xwfaoauR" +
-            "WupQsWitblSRg/umwR6EY5Hsam+xSz/6ywuIJD/GkLFD9V7fUfgtAvaJbsNG/wCX/wD685P6Vm1t" +
-            "2Nhc2f24zxMqNZybXwcHp+R46HmsSgVNpyk15BU8d5dRIEiuZkQdFWQgCoKKZq0nuWf7Qvv+fy4/" +
-            "7+t/jR/aF9/z+XH/AH9b/Gq1FBPJHsWf7Qvv+fy4/wC/rf40f2hff8/lx/39b/Gq1FAckexZ/tC+" +
-            "/wCfy4/7+t/jR/aF9/z+XH/f1v8AGq1FAckexZ/tC+/5/Lj/AL+t/jR/aF9/z+XH/f1v8arUUByR" +
-            "7Fn+0L7/AJ/Lj/v63+NH9oX3/P5cf9/W/wAarUUByR7Fn+0L7/n8uP8Av63+NH9oX3/P5cf9/W/x" +
-            "qtRQHJHsWf7Qvv8An8uP+/rf40f2hff8/lx/39b/ABqtRQHJHsWf7Qvv+fy4/wC/rf40f2hff8/l" +
-            "x/39b/Gq1FAckexYa+vHUq93OysMEGQkEVXoooGklsf/2Q=="
+            "aZ/0CP8AyZagSqN7Rf4f5mbRWl9s0z/oEf8AyZag+2aZ/wBAj/yZagOeX8r/AA/zM2itL7Zpn/QI" +
+            "/wDJlqPtmmf9Aj/yZagOeX8r/D/MzaK0vtemf9Aj/wAmWo+2aZ/0CP8AyZagOeX8r/D/ADMbz5fL" +
+            "8rzG8v8Au7jj8qf9qm/57P8A99Gtf7Zpn/QI/wDJlqPtmmf9Aj/yZagOeX8r/D/MzaK0vtemf9Aj" +
+            "/wAmWo+2aZ/0CP8AyZagOeX8r/D/ADMbz5fL8rzG8v8Au7jj8qPtU3/PZ/8Avo1r/bNM/wCgR/5M" +
+            "tU+zSZoWlbR9qqQMm5cDJ7dPY0BztdF+H+Zifapv+ez/99Gj7VN/z2f8A76NdF9j0n/oEf+TLUfY" +
+            "9J/6BH/ky1Fw55eX4f5mP9qvvI8z7VP5ecZ8xsZqL7VN/wA9n/76NdH5OmfYzN/Zf3XCeX9pbHQn" +
+            "Ocf5zUX2PSf+gR/5MtRcOeXl+H+Zz1Fa97Dp8UYePS96k4DfaWxn0+6ap/aNP/6BP/kz/wDY0Fc8" +
+            "uz/D/MqUVb+0af/0Cf/Jn/wCxo+0af/0Cf/Jn/wCxoDnl2f4f5lSrVhdraXPmyW6XK7GTy5CQORjP" +
+            "HPUdqd9o0/8A6BP/AJM//Y0faNP/AOgT/wCTP/2NAc8uz/D/ADJ31G2ksVtH0qBoY3MiqZX4Y9T1" +
+            "9zUct1pkyhZdKDBRgZuWwPoMcD2o+0af/wBAn/yZ/wDsaPtGn/8AQJ/8mf8A7GgXNLy/D/MZdXOn" +
+            "zRKi6T5YUADZcsOnYccD2rNq39o0/wD6BP8A5M//AGNH2jT/APoE/wAkz/8AY0y1KXZ/h/mVKsWV" +
+            "0lpceZJbpcLsZfLkJA5GM8c9am+0af8A9An/AMmf/saPtGn/APQJ/wDJn/7GgHOS6P8AD/MjjuNO" +
+            "hcvFpW1iCM/amz+HHy/hVTzpfL8rzG8v+7uOPyq39o0//oE/+TP/ANjR9o0//oE/+TP/ANjQF5Po" +
+            "/wAP8ypRVv7Rp/8A0Cf/ACZ/+xo+0af/ANAn/wAmf/saY+eXZ/h/mPGoXIsjZtcStb5yE8wgKfXH" +
+            "1x+FRRXtzFCY4riZIz1VZCBT/tGn/wDQJ/8AJn/7Gj7Rp/8A0Cf/ACZ/+xoFzT7P8P8AMpUUUUyj" +
+            "/9k="
 
         private val MATCH_PARENT = ViewGroup.LayoutParams.MATCH_PARENT
         private val WRAP_CONTENT = ViewGroup.LayoutParams.WRAP_CONTENT
@@ -129,13 +109,24 @@ class MainActivity : Activity() {
     private lateinit var qrCaptionView: TextView
     private lateinit var haTabButton: Button
     private lateinit var tokenTabButton: Button
+
+    // 第一排：演练测试
     private lateinit var testButton: Button
-    private lateinit var copyButton: Button
-    private lateinit var resetButton: Button
-    private lateinit var themeButton: Button
     private lateinit var imageTestButton: Button
     private lateinit var videoTestButton: Button
+    private lateinit var ttsTestButton: Button
+
+    // 第二排：阵法调控
+    private lateinit var historyButton: Button
+    private lateinit var positionButton: Button
+    private lateinit var muteButton: Button
+    private lateinit var themeButton: Button
+
+    // 第三排：符钥与系统
+    private lateinit var copyButton: Button
+    private lateinit var resetButton: Button
     private lateinit var aboutButton: Button
+
     private lateinit var titleView: TextView
     private lateinit var subtitleView: TextView
     private lateinit var callInfoTitleView: TextView
@@ -145,6 +136,7 @@ class MainActivity : Activity() {
 
     private var bannerController: BannerController? = null
     private var currentUrl: String = ""
+    private var webConsoleUrl: String = ""
     private var cachedIp: String = "127.0.0.1"
     private var theme: Theme = Theme.XIUXIAN
     private var activeQrTab: QrTab = QrTab.HA_INTEGRATION
@@ -158,12 +150,10 @@ class MainActivity : Activity() {
         requestNotificationPermissionIfNeeded()
         refreshUi()
 
-        // 打开界面即尝试拉起常驻服务
         NotifyService.start(this)
         mainHandler.postDelayed({ if (!isFinishing) refreshUi() }, 600L)
         mainHandler.postDelayed({ if (!isFinishing) refreshUi() }, 1600L)
 
-        // 默认将焦点停留在「试传一简」按钮上
         testButton.requestFocus()
     }
 
@@ -194,28 +184,27 @@ class MainActivity : Activity() {
         val screenWidthDp = resources.displayMetrics.widthPixels / resources.displayMetrics.density
         val isWideScreen = screenWidthDp >= 600f
 
-        // 外层垂直容器：电视 1080p 下紧凑留白，确保一屏完整呈现无截断
         val rootColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            val padH = dp(if (isWideScreen) 36 else 20)
-            val padV = dp(if (isWideScreen) 18 else 16)
+            val padH = dp(if (isWideScreen) 34 else 20)
+            val padV = dp(if (isWideScreen) 16 else 16)
             setPadding(padH, padV, padH, padV)
             isFocusable = false
         }
         scroll.addView(rootColumn, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        // 1. 顶部品牌与实时状态栏（左：无边框玉简图标 + 标题/版本 + 副标题；右：状态胶囊徽章）
+        // 1. 顶部品牌与实时状态栏
         val headerBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(12))
+            setPadding(0, 0, 0, dp(10))
         }
 
         val appIconView = ImageView(this).apply {
             setImageResource(R.mipmap.ic_launcher)
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
-        headerBar.addView(appIconView, LinearLayout.LayoutParams(dp(44), dp(44)).apply {
+        headerBar.addView(appIconView, LinearLayout.LayoutParams(dp(42), dp(42)).apply {
             rightMargin = dp(14)
         })
 
@@ -226,7 +215,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        titleView = makeText(theme.appTitle, 24f, Color.WHITE, true)
+        titleView = makeText(theme.appTitle, 23f, Color.WHITE, true)
         if (theme == Theme.XIUXIAN) {
             titleView.typeface = Typeface.SERIF
             titleView.setShadowLayer(10f, 0f, 1f, Color.argb(0x80, 0x36, 0xD1, 0xA8))
@@ -240,7 +229,7 @@ class MainActivity : Activity() {
         }
         if (versionName.isNotEmpty()) {
             val verBadge = makeText("v$versionName", 11f, theme.accentColor, true).apply {
-                setPadding(dp(8), dp(2), dp(8), dp(2))
+                setPadding(dp(7), dp(2), dp(7), dp(2))
                 background = roundedRect(
                     dp(6).toFloat(),
                     Color.argb(0x22, Color.red(theme.accentColor), Color.green(theme.accentColor), Color.blue(theme.accentColor)),
@@ -254,14 +243,14 @@ class MainActivity : Activity() {
         }
         headerTitleCol.addView(titleRow)
 
-        subtitleView = makeText(theme.appSubtitle, 12.5f, theme.hintColor, false).apply {
+        subtitleView = makeText(theme.appSubtitle, 12f, theme.hintColor, false).apply {
             setPadding(0, dp(2), 0, 0)
         }
         headerTitleCol.addView(subtitleView)
         headerBar.addView(headerTitleCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
         headerBadgeView = makeText("", 12f, Color.WHITE, true).apply {
-            setPadding(dp(12), dp(6), dp(12), dp(6))
+            setPadding(dp(12), dp(5), dp(12), dp(5))
             background = roundedRect(dp(16).toFloat(), theme.cardBg, dp(1), theme.cardStroke)
         }
         if (isWideScreen) {
@@ -269,20 +258,20 @@ class MainActivity : Activity() {
         }
         rootColumn.addView(headerBar)
 
-        // 2. 主体布局（宽屏电视横向双栏，窄屏手机纵向流式）
+        // 2. 主体布局
         val mainRow = LinearLayout(this).apply {
             orientation = if (isWideScreen) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
             isFocusable = false
         }
 
-        // === 左栏 (控制台：2x2 状态指标网格 + 符钥接口卡片 + 分组操作按钮 + 保活提示) ===
+        // === 左栏 (控制台：2x2 状态指标网格 + 符钥接口卡片 + 三排操作按钮 + 保活说明) ===
         val leftColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isFocusable = false
         }
 
-        // (a) 2x2 状态指标网格卡片（支持遥控器聚焦与点击跳转悬浮窗授权）
-        val statusCard = makeCard(padH = 14, padV = 10).apply {
+        // (a) 2x2 状态指标网格卡片
+        val statusCard = makeCard(padH = 14, padV = 9).apply {
             isFocusable = true
             isFocusableInTouchMode = false
             val cardStates = StateListDrawable()
@@ -320,37 +309,37 @@ class MainActivity : Activity() {
         ipMetricValue = ipVal
         metricRow2.addView(overlayCell, weightedParams(0, gapDp = 8))
         metricRow2.addView(ipCell, weightedParams(1, gapDp = 8))
-        statusCard.addView(metricRow2, linearParams(topMargin = dp(8)))
+        statusCard.addView(metricRow2, linearParams(topMargin = dp(6)))
 
         leftColumn.addView(statusCard)
 
         // (b) 传音符钥与接口地址卡片
-        val urlCard = makeCard(padH = 16, padV = 10)
+        val urlCard = makeCard(padH = 14, padV = 8)
         val urlHeaderRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        callInfoTitleView = makeText(theme.callInfoTitle, 12.5f, theme.hintColor, true)
+        callInfoTitleView = makeText(theme.callInfoTitle, 12f, theme.hintColor, true)
         urlHeaderRow.addView(callInfoTitleView, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
-        tokenValue = makeText("", 13f, Color.WHITE, true).apply {
+        tokenValue = makeText("", 12.5f, Color.WHITE, true).apply {
             typeface = Typeface.MONOSPACE
-            setPadding(dp(8), dp(2), dp(8), dp(2))
+            setPadding(dp(7), dp(2), dp(7), dp(2))
             background = roundedRect(dp(6).toFloat(), Color.argb(0x40, 0x00, 0x00, 0x00), dp(1), theme.cardStroke)
         }
         urlHeaderRow.addView(tokenValue)
         urlCard.addView(urlHeaderRow)
 
-        urlValue = makeText("", 13.5f, theme.accentColor, false).apply {
+        urlValue = makeText("", 13f, theme.accentColor, false).apply {
             typeface = Typeface.MONOSPACE
-            setPadding(dp(10), dp(7), dp(10), dp(7))
+            setPadding(dp(9), dp(6), dp(9), dp(6))
             background = roundedRect(dp(8).toFloat(), Color.argb(0x48, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
             setOnClickListener { copyCallUrl() }
         }
-        urlCard.addView(urlValue, linearParams(topMargin = dp(8)))
-        leftColumn.addView(urlCard, linearParams(topMargin = dp(10)))
+        urlCard.addView(urlValue, linearParams(topMargin = dp(6)))
+        leftColumn.addView(urlCard, linearParams(topMargin = dp(8)))
 
-        // (c) 操作按钮第一排：三大演练测试按钮（文字 / 画影 / 灵镜）并排，主次分明
+        // (c) 操作按钮第一排：四大演练测试（文字 / 画影 / 灵镜 / 灵音 TTS）
         val buttonRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         testButton = buildButton(
             label = theme.testButtonText,
@@ -360,55 +349,66 @@ class MainActivity : Activity() {
         )
         imageTestButton = buildButton(theme.imageTestButtonText) { showTestImageBanner() }
         videoTestButton = buildButton(theme.videoTestButtonText) { showTestVideoBanner() }
-        buttonRow1.addView(testButton, weightedParams(0, gapDp = 10))
-        buttonRow1.addView(imageTestButton, weightedParams(1, gapDp = 10))
-        buttonRow1.addView(videoTestButton, weightedParams(2, gapDp = 10))
-        leftColumn.addView(buttonRow1, linearParams(topMargin = dp(10)))
+        ttsTestButton = buildButton(theme.ttsTestButtonText) { showTestTtsBanner() }
+        buttonRow1.addView(testButton, weightedParams(0, gapDp = 8))
+        buttonRow1.addView(imageTestButton, weightedParams(1, gapDp = 8))
+        buttonRow1.addView(videoTestButton, weightedParams(2, gapDp = 8))
+        buttonRow1.addView(ttsTestButton, weightedParams(3, gapDp = 8))
+        leftColumn.addView(buttonRow1, linearParams(topMargin = dp(8)))
 
-        // (d) 操作按钮第二排：符钥与系统设置（复制 / 重置 / 主题 / 关于）4 列并排
+        // (d) 操作按钮第二排：阵法调控（简录回看 / 默认方位循环 / 闭关免扰 / 主题切换）
         val buttonRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        historyButton = buildButton(theme.historyButtonText) { showHistoryDialog() }
+        positionButton = buildButton(theme.positionButtonText(Prefs.getBannerPosition(this))) { cycleBannerPosition() }
+        muteButton = buildButton(theme.muteButtonText(Prefs.isMuted(this))) { toggleMute() }
+        themeButton = buildButton(themeToggleLabel()) { toggleTheme() }
+        buttonRow2.addView(historyButton, weightedParams(0, gapDp = 8))
+        buttonRow2.addView(positionButton, weightedParams(1, gapDp = 8))
+        buttonRow2.addView(muteButton, weightedParams(2, gapDp = 8))
+        buttonRow2.addView(themeButton, weightedParams(3, gapDp = 8))
+        leftColumn.addView(buttonRow2, linearParams(topMargin = dp(6)))
+
+        // (e) 操作按钮第三排：符钥与系统（复制 / 重置 / 溯源关于）
+        val buttonRow3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         copyButton = buildButton(theme.copyButtonText) { copyCallUrl() }
         resetButton = buildButton(theme.resetButtonText) { resetToken() }
-        themeButton = buildButton(themeToggleLabel()) { toggleTheme() }
         aboutButton = buildButton(theme.aboutButtonText) { showAboutDialog() }
-        buttonRow2.addView(copyButton, weightedParams(0, gapDp = 10))
-        buttonRow2.addView(resetButton, weightedParams(1, gapDp = 10))
-        buttonRow2.addView(themeButton, weightedParams(2, gapDp = 10))
-        buttonRow2.addView(aboutButton, weightedParams(3, gapDp = 10))
-        leftColumn.addView(buttonRow2, linearParams(topMargin = dp(8)))
+        buttonRow3.addView(copyButton, weightedParams(0, gapDp = 8))
+        buttonRow3.addView(resetButton, weightedParams(1, gapDp = 8))
+        buttonRow3.addView(aboutButton, weightedParams(2, gapDp = 8))
+        leftColumn.addView(buttonRow3, linearParams(topMargin = dp(6)))
 
-        // (e) 底部运维与 Aerial 保活说明箱
-        val helperCard = makeCard(padH = 14, padV = 9)
-        footerView = makeText(theme.footerHint, 11.5f, theme.hintColor, false).apply {
-            setLineSpacing(dp(3).toFloat(), 1f)
+        // (f) 底部运维与 Aerial 保活说明箱
+        val helperCard = makeCard(padH = 14, padV = 8)
+        footerView = makeText(theme.footerHint, 11f, theme.hintColor, false).apply {
+            setLineSpacing(dp(2.5f).toFloat(), 1f)
         }
         helperCard.addView(footerView)
-        leftColumn.addView(helperCard, linearParams(topMargin = dp(10)))
+        leftColumn.addView(helperCard, linearParams(topMargin = dp(8)))
 
         if (isWideScreen) {
-            val leftParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.32f).apply {
-                rightMargin = dp(18)
+            val leftParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1.34f).apply {
+                rightMargin = dp(16)
             }
             mainRow.addView(leftColumn, leftParams)
         } else {
             mainRow.addView(leftColumn, linearParams())
         }
 
-        // === 右栏 (极速互联卡片：等宽双 Tab + 精炼说明 + 居中二维码 + 快捷复制底部栏) ===
+        // === 右栏 (极速互联卡片：HA 专属集成 vs 手机扫码控制台) ===
         val rightColumn = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             isFocusable = false
         }
 
-        val qrCard = makeCard(padH = 16, padV = 14).apply {
+        val qrCard = makeCard(padH = 16, padV = 12).apply {
             gravity = Gravity.CENTER_HORIZONTAL
         }
 
-        // 选项卡切换栏：两按钮满宽等分
         val tabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, 0, 0, dp(10))
+            setPadding(0, 0, 0, dp(8))
         }
         haTabButton = buildTabButton("🌟 HA 自动发现集成", activeQrTab == QrTab.HA_INTEGRATION) {
             if (activeQrTab != QrTab.HA_INTEGRATION) {
@@ -416,9 +416,9 @@ class MainActivity : Activity() {
                 refreshQrDisplay()
             }
         }
-        tokenTabButton = buildTabButton("🔗 本机调用符钥", activeQrTab == QrTab.TOKEN_URL) {
-            if (activeQrTab != QrTab.TOKEN_URL) {
-                activeQrTab = QrTab.TOKEN_URL
+        tokenTabButton = buildTabButton("📱 手机控制台 & 符钥", activeQrTab == QrTab.WEB_CONSOLE) {
+            if (activeQrTab != QrTab.WEB_CONSOLE) {
+                activeQrTab = QrTab.WEB_CONSOLE
                 refreshQrDisplay()
             }
         }
@@ -426,21 +426,20 @@ class MainActivity : Activity() {
         tabRow.addView(tokenTabButton, weightedParams(1, gapDp = 8))
         qrCard.addView(tabRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        qrTitleView = makeText("", 15f, Color.WHITE, true).apply {
+        qrTitleView = makeText("", 14.5f, Color.WHITE, true).apply {
             gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, dp(2), 0, dp(3))
+            setPadding(0, dp(2), 0, dp(2))
         }
-        qrSubtitleView = makeText("", 12f, theme.hintColor, false).apply {
+        qrSubtitleView = makeText("", 11.5f, theme.hintColor, false).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setLineSpacing(dp(2).toFloat(), 1f)
-            setPadding(dp(8), 0, dp(8), dp(10))
+            setPadding(dp(6), 0, dp(6), dp(8))
         }
         qrCard.addView(qrTitleView)
         qrCard.addView(qrSubtitleView)
 
-        // 二维码白底容器（带微光外框）
         val qrBox = LinearLayout(this).apply {
-            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setPadding(dp(7), dp(7), dp(7), dp(7))
             background = roundedRect(dp(12).toFloat(), Color.WHITE, dp(2), theme.accentColor)
             gravity = Gravity.CENTER
         }
@@ -455,19 +454,19 @@ class MainActivity : Activity() {
         qrCaptionView = makeText("", 11f, theme.accentColor, false).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             setLineSpacing(dp(2).toFloat(), 1f)
-            setPadding(dp(10), dp(8), dp(10), dp(4))
+            setPadding(dp(8), dp(7), dp(8), dp(3))
             background = roundedRect(dp(8).toFloat(), Color.argb(0x38, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
             setOnClickListener { copyActiveQrUrl() }
         }
-        qrCard.addView(qrCaptionView, linearParams(topMargin = dp(10)))
+        qrCard.addView(qrCaptionView, linearParams(topMargin = dp(8)))
 
         rightColumn.addView(qrCard)
 
         if (isWideScreen) {
-            val rightParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.92f)
+            val rightParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 0.90f)
             mainRow.addView(rightColumn, rightParams)
         } else {
-            mainRow.addView(rightColumn, linearParams(topMargin = dp(12)))
+            mainRow.addView(rightColumn, linearParams(topMargin = dp(10)))
         }
 
         rootColumn.addView(mainRow)
@@ -477,12 +476,12 @@ class MainActivity : Activity() {
     private fun buildMetricCell(label: String): Pair<LinearLayout, TextView> {
         val cell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(7), dp(12), dp(7))
+            setPadding(dp(11), dp(6), dp(11), dp(6))
             background = roundedRect(dp(8).toFloat(), Color.argb(0x36, 0x00, 0x00, 0x00), 0, Color.TRANSPARENT)
         }
-        val labelView = makeText(label, 11.5f, theme.hintColor, false)
-        val valueView = makeText("", 13.5f, Color.WHITE, true).apply {
-            setPadding(0, dp(3), 0, 0)
+        val labelView = makeText(label, 11f, theme.hintColor, false)
+        val valueView = makeText("", 13f, Color.WHITE, true).apply {
+            setPadding(0, dp(2), 0, 0)
             setSingleLine(true)
         }
         cell.addView(labelView)
@@ -490,7 +489,7 @@ class MainActivity : Activity() {
         return cell to valueView
     }
 
-    private fun makeCard(padH: Int = 18, padV: Int = 14): LinearLayout {
+    private fun makeCard(padH: Int = 16, padV: Int = 12): LinearLayout {
         val card = LinearLayout(this)
         card.orientation = LinearLayout.VERTICAL
         card.setPadding(dp(padH), dp(padV), dp(padH), dp(padV))
@@ -511,9 +510,9 @@ class MainActivity : Activity() {
     private fun buildTabButton(label: String, isSelected: Boolean, onClick: () -> Unit): Button {
         val button = Button(this)
         button.text = label
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
         button.typeface = Typeface.DEFAULT_BOLD
-        button.setPadding(dp(10), dp(7), dp(10), dp(7))
+        button.setPadding(dp(8), dp(6), dp(8), dp(6))
         button.isFocusable = true
         button.isFocusableInTouchMode = false
         button.stateListAnimator = null
@@ -544,11 +543,6 @@ class MainActivity : Activity() {
         return button
     }
 
-    /**
-     * 遥控器焦点样式与触觉反馈：
-     * 普通态：深青/深灰底色 + 细描边（主按钮采用高亮边框强调）；
-     * 聚焦态：高亮灵玉青/主题蓝 + 灵光白边 + 放大 1.04 倍平滑微动效。
-     */
     private fun buildButton(
         label: String,
         isPrimary: Boolean = false,
@@ -565,24 +559,24 @@ class MainActivity : Activity() {
         val states = StateListDrawable()
         states.addState(
             intArrayOf(android.R.attr.state_focused),
-            roundedRect(dp(10).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(dp(9).toFloat(), theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(android.R.attr.state_pressed),
-            roundedRect(dp(10).toFloat(), theme.accentColor, dp(2), Color.WHITE)
+            roundedRect(dp(9).toFloat(), theme.accentColor, dp(2), Color.WHITE)
         )
         states.addState(
             intArrayOf(),
-            roundedRect(dp(10).toFloat(), normalBg, dp(1), normalStroke)
+            roundedRect(dp(9).toFloat(), normalBg, dp(1), normalStroke)
         )
 
         val button = Button(this)
         button.text = label
         button.setTextColor(Color.WHITE)
-        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13.5f)
+        button.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
         button.typeface = Typeface.DEFAULT_BOLD
         button.background = states
-        button.setPadding(dp(10), dp(10), dp(10), dp(10))
+        button.setPadding(dp(8), dp(9), dp(8), dp(9))
         button.isFocusable = true
         button.isFocusableInTouchMode = false
         button.stateListAnimator = null
@@ -613,7 +607,7 @@ class MainActivity : Activity() {
         return params
     }
 
-    private fun weightedParams(position: Int, gapDp: Int = 12): LinearLayout.LayoutParams {
+    private fun weightedParams(position: Int, gapDp: Int = 8): LinearLayout.LayoutParams {
         val params = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f)
         if (position > 0) {
             params.leftMargin = dp(gapDp)
@@ -631,7 +625,6 @@ class MainActivity : Activity() {
         val running = NotifyService.isServerRunning
         val errorMsg = NotifyService.lastError
 
-        // 异步查询局域网 IP，避免遍历网络接口阻塞主线程
         Thread({
             val freshIp = NetUtils.localIpv4()
             mainHandler.post {
@@ -653,8 +646,8 @@ class MainActivity : Activity() {
         val ip = cachedIp
         val ipUsable = NetUtils.hasUsableIp(ip)
         currentUrl = "http://$ip:${NotifyService.PORT}/$token/notify"
+        webConsoleUrl = "http://$ip:${NotifyService.PORT}/$token"
 
-        // 顶部状态胶囊
         headerBadgeView.text = if (running) {
             if (theme.isXianxia) "● 灵脉通畅 · :${NotifyService.PORT}" else "● 服务运行中 · :${NotifyService.PORT}"
         } else {
@@ -662,7 +655,6 @@ class MainActivity : Activity() {
         }
         headerBadgeView.setTextColor(if (running) theme.accentColor else Color.rgb(0xFF, 0xB0, 0x20))
 
-        // 2x2 指标面板更新
         stateMetricValue.text = when {
             running -> if (theme.isXianxia) "● 已开启（常驻）" else "● 运行中（常驻）"
             !errorMsg.isNullOrBlank() -> "❌ 异常：$errorMsg"
@@ -686,29 +678,32 @@ class MainActivity : Activity() {
         tokenValue.text = theme.tokenLabel(token)
         urlValue.text = currentUrl
 
+        positionButton.text = theme.positionButtonText(Prefs.getBannerPosition(this))
+        muteButton.text = theme.muteButtonText(Prefs.isMuted(this))
+
         refreshQrDisplay()
     }
 
     private fun refreshQrDisplay() {
         val isHa = activeQrTab == QrTab.HA_INTEGRATION
-        val content = if (isHa) HA_INTEGRATION_URL else currentUrl
+        val content = if (isHa) HA_INTEGRATION_URL else webConsoleUrl
 
         qrTitleView.text = if (isHa) {
             "🌟 Home Assistant 专属集成"
         } else {
-            if (theme.isXianxia) "传音玉简 · 符钥" else "本机调用地址"
+            "📱 手机控制台 & 符钥"
         }
 
         qrSubtitleView.text = if (isHa) {
             "在 HA 安装 ha-yujian 集成后，局域网 mDNS 自动发现此电视，免配 IP 与 Token！"
         } else {
-            "供 cURL、外部脚本或自动化系统通过 HTTP POST 直接调用的完整接口"
+            "手机扫码在浏览器中秒开发送通知、查阅简录历史、调控免扰模式与消散横幅"
         }
 
         qrCaptionView.text = if (isHa) {
             "$HA_INTEGRATION_URL\n（扫码直达 GitHub 仓库 · 点此复制链接）"
         } else {
-            "$currentUrl\n（点此复制完整接口地址）"
+            "$webConsoleUrl\n（扫码直达 Web 控制台 · 点此复制链接）"
         }
 
         updateTabButtonStyles()
@@ -824,7 +819,6 @@ class MainActivity : Activity() {
         return true
     }
 
-    /** 图片测试：内置 1280×720 测试图（raw 资源运行时转 base64），验证静态图片渲染。 */
     private fun showTestImageBanner() {
         if (!Settings.canDrawOverlays(this)) {
             toast(theme.overlayPermissionToast)
@@ -851,13 +845,6 @@ class MainActivity : Activity() {
         )
     }
 
-    /**
-     * 视频测试：用 App 内置抽帧动画（assets/testframes 循环）。
-     *
-     * 不走本机 /{token}/stream：那个接口是给 HA/外部推送用的，测渲染时不该把它
-     * 拉进来当变量——服务没起、端口被占、明文被拦都会让用户只看到一块空白，
-     * 反而分不清是媒体卡坏了还是网络坏了。
-     */
     private fun showTestVideoBanner() {
         if (!Settings.canDrawOverlays(this)) {
             toast(theme.overlayPermissionToast)
@@ -870,14 +857,91 @@ class MainActivity : Activity() {
                 title = if (theme.isXianxia) "灵镜自演" else "视频测试",
                 text = if (theme.isXianxia) "灵镜自内映照，影像循环不熄。" else "内置抽帧动画循环播放。",
                 durationSeconds = 30,
-                // 内置抽帧动画：不走 HTTP、不依赖服务是否在监听，
-                // 用来单纯验证「媒体卡能不能渲染出画面」
                 assetFrames = true
             )
         )
     }
 
-    /** 关于：应用版本、仓库、集成地址。原生 AlertDialog（本工程零 AndroidX）。 */
+    private fun showTestTtsBanner() {
+        if (!Settings.canDrawOverlays(this)) {
+            toast(theme.overlayPermissionToast)
+            openOverlaySettings()
+            return
+        }
+        val controller = bannerController ?: BannerController(this).also { bannerController = it }
+        controller.show(
+            BannerRequest(
+                title = if (theme.isXianxia) "灵音传诵" else "语音播报",
+                text = if (theme.isXianxia) "千里传音，玉简已同步为您语音朗诵此条灵讯。" else "这是一条由 Android 原生引擎朗读的语音播报测试通知。",
+                durationSeconds = 8,
+                tts = "true"
+            )
+        )
+    }
+
+    /** 传音简录（历史记录弹窗）：展示最近 20 条通知，遥控器点击可重新演练展示该通知 */
+    private fun showHistoryDialog() {
+        val items = NotifyHistory.getAll(this)
+        if (items.isEmpty()) {
+            toast(if (theme.isXianxia) "暂无传音简录" else "暂无通知历史")
+            return
+        }
+        val titles = items.map { item ->
+            val levelTag = when (item.level.lowercase()) {
+                "warn" -> if (theme.isXianxia) "[灵警]" else "[警告]"
+                "error" -> if (theme.isXianxia) "[告急]" else "[错误]"
+                else -> if (theme.isXianxia) "[传音]" else "[通知]"
+            }
+            val posTag = "[${theme.positionDisplayName(item.position)}]"
+            val ttsTag = if (!item.tts.isNullOrBlank()) " 🔊" else ""
+            "$levelTag $posTag ${item.formattedTime}$ttsTag\n${item.title.ifEmpty { "（无标题）" }}：${item.text.take(32)}"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle(theme.historyButtonText)
+            .setItems(titles) { _, which ->
+                val selected = items[which]
+                val controller = bannerController ?: BannerController(this).also { bannerController = it }
+                controller.show(
+                    BannerRequest(
+                        title = selected.title,
+                        text = selected.text,
+                        level = BannerLevel.fromRaw(selected.level),
+                        position = BannerPosition.fromRaw(selected.position),
+                        durationSeconds = 6,
+                        tts = selected.tts
+                    )
+                )
+                toast(if (theme.isXianxia) "已重演此简" else "已重新展示该通知")
+            }
+            .setNeutralButton(if (theme.isXianxia) "拭去简录 (清空)" else "清空历史") { _, _ ->
+                NotifyHistory.clear(this)
+                toast(if (theme.isXianxia) "简录已拭去" else "历史已清空")
+            }
+            .setPositiveButton(if (theme.isXianxia) "收起" else "关闭", null)
+            .show()
+    }
+
+    private fun cycleBannerPosition() {
+        val current = Prefs.getBannerPosition(this)
+        val positions = listOf("top", "top-right", "bottom", "bottom-right", "top-left", "bottom-left")
+        val nextIndex = (positions.indexOf(current) + 1) % positions.size
+        val nextPos = positions[nextIndex]
+        Prefs.setBannerPosition(this, nextPos)
+        refreshUi()
+        toast(if (theme.isXianxia) "默认方位：${theme.positionDisplayName(nextPos)}" else "默认位置：${theme.positionDisplayName(nextPos)}")
+    }
+
+    private fun toggleMute() {
+        val muted = !Prefs.isMuted(this)
+        Prefs.setMuted(this, muted)
+        refreshUi()
+        toast(
+            if (muted) (if (theme.isXianxia) "已开启闭关免扰（静音）" else "已开启静音模式")
+            else (if (theme.isXianxia) "已开启灵音畅通（发声）" else "已开启提示声音")
+        )
+    }
+
     private fun showAboutDialog() {
         val version = try {
             packageManager.getPackageInfo(packageName, 0).versionName
@@ -891,7 +955,7 @@ class MainActivity : Activity() {
             append("HA 集成：\n").append(HA_INTEGRATION_URL).append("\n\n")
             append("致谢：\n感谢开源电视桌面 Aerial 的 ADB 保活机制，助力实现后台拉起服务通知。")
         }
-        android.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle(if (theme.isXianxia) "简牍溯源" else "关于")
             .setMessage(message)
             .setPositiveButton(if (theme.isXianxia) "知道了" else "确定", null)
@@ -913,7 +977,7 @@ class MainActivity : Activity() {
         val (label, url) = if (isHa) {
             "ha-yujian 集成仓库" to HA_INTEGRATION_URL
         } else {
-            theme.clipLabel to currentUrl
+            "玉简 Web 控制台" to webConsoleUrl
         }
         if (url.isEmpty()) return
         val manager = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -986,6 +1050,12 @@ class MainActivity : Activity() {
     private fun dp(value: Int): Int = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP,
         value.toFloat(),
+        resources.displayMetrics
+    ).toInt()
+
+    private fun dp(value: Float): Int = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP,
+        value,
         resources.displayMetrics
     ).toInt()
 }

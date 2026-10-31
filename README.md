@@ -53,15 +53,21 @@
 | --- | --- |
 | 常驻前台服务 | 固定端口 `8791`，`START_STICKY` 保活，开机自动拉起 |
 | 局域网 HTTP 接口 | `POST /{token}/notify`，JSON 入参，token 鉴权 |
+| 内置单页 Web 控制台 | 手机浏览器扫码直达 `http://<电视IP>:8791/<token>`，秒开发送通知、查阅简录、消散横幅与调整免扰 |
 | 随机 token | 首次启动生成 8 位字母数字，持久化到 SharedPreferences，可一键重置 |
 | 悬浮窗横幅 | `SYSTEM_ALERT_WINDOW` + 自绘，不抢遥控器焦点（`FLAG_NOT_FOCUSABLE`） |
-| 分级着色 | `level` = `info` / `warn` / `error`，铃铛与描边变色，布局不变 |
+| 六大显形方位 | 顶部居中、底部居中及四角画中画（`top-right` / `bottom-right` 等），防挡字幕与画面 |
+| 原生 TTS 语音播报 | 支持 `tts: true` 或自定义朗读文案，Android 原生引擎零依赖直接朗读灵讯 |
+| 准视频流快照轮询 | 传入 `image_interval: 1000`（毫秒），低开销定时拉取快照，无需高耗能转码 |
+| 原地刷新与排队 | 支持 `id` 相同原地平滑无闪烁更新（适合下载进度），及 `queue: true` FIFO 顺延排队 |
+| 传音简录 (历史回看) | 自动缓存最近 20 条通知记录，电视端弹窗一览错过的消息并支持一键重演 |
+| 闭关免扰 (静音模式) | 一键开启全局静音，横幅照常显化但静默无声，深夜观影不惊扰 |
+| 分级着色 | `level` = `info` / `warn` / `error`，玉简符标与描边灵动变色，布局不变 |
 | 常驻横幅 | `sticky: true` 不自动消失，靠 `maxDuration`（默认 300s）兜底，或 `POST /dismiss` 关闭 |
-| 提示音 | 入场播放 `res/raw/chord.mp3`（走 `STREAM_MUSIC`），请求体 `sound: false` 可单条静音 |
-| 健康探活 | `GET /health` 无需 token，返回版本、uptime、端口、横幅状态，供 HA availability 用 |
+| 提示音 | 入场播放 `res/raw/chord.mp3`（修仙主题专属音效，走 `STREAM_MUSIC`），请求体 `sound: false` 可单条静音 |
+| 健康探活 | `GET /health` 无需 token，返回版本、uptime、端口、横幅状态、静音状态、默认方位，供 HA availability 用 |
 | mDNS 发现 | 广播 `_tvnotify._tcp`，TXT 带 token / 版本 / 路径 / 型号（**TV 端只负责广播**） |
-| 设置界面 | 服务状态、悬浮窗权限、本机 IPv4、完整调用地址、二维码、测试/复制/重置 |
-| 遥控器友好 | 三个按钮均有清晰的 D-Pad 焦点态，确认键直接触发 |
+| 双美学主题 | 支持「修仙玉简」与「现代深色 tvOS」一键切换，遥控器 D-Pad 细腻微缩放与灵光聚焦 |
 
 ---
 
@@ -137,6 +143,11 @@ Content-Type: application/json
 | `image` | string | 否 | `null` | HTTP/HTTPS URL | 静态图片/抓拍快照 URL，右侧 16:9 画卷展示 |
 | `image_base64` | string | 否 | `null` | Base64 编码 | 图片 Base64（支持 `data:image/...;base64,` 前缀） |
 | `video` | string | 否 | `null` | HTTP/HTTPS URL | 动态视频流 URL（**MJPEG 流**，纯软解不占硬件解码器） |
+| `position` | string | 否 | 电视默认 | `top` / `bottom` / `top-right` / `bottom-right` / `top-left` / `bottom-left` | 显形方位；`top-right` / `bottom-right` 为画中画小窗 |
+| `tts` | boolean/string | 否 | `null` | `true` 或自定义文本 | 原生 TTS 语音朗读；传 `true` 自动朗读标题与正文 |
+| `image_interval` | number | 否 | `0` | 毫秒数 (>=500) | 快照定时轮询刷新间隔（毫秒），打造低开销准视频流 |
+| `id` | string | 否 | `null` | — | 通知唯一标识；同 id 原地平滑无闪烁更新并重置倒计时 |
+| `queue` | boolean | 否 | `false` | `true` / `false` | 是否排队顺延：当前已有横幅时进入 FIFO 队列，不被抢占顶替 |
 
 `title` 与 `text` 去首尾空白后**同时为空**会被拒绝——但如果带了 `image` / `image_base64` / `video` 中任意一项，只推媒体、不带文案也是合法的。
 
@@ -240,16 +251,18 @@ curl "http://192.168.1.23:8791/health"
 ```
 
 ```json
-{"ok":true,"version":"1.2.12","uptime":3621,"port":8791,"banner":"showing"}
+{"ok":true,"version":"1.3.0","uptime":3621,"port":8791,"banner":"showing","muted":false,"position":"top"}
 ```
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `ok` | boolean | 恒为 `true`（能返回就说明服务活着） |
-| `version` | string | App 版本，当前 `1.2.12` |
+| `version` | string | App 版本，当前 `1.3.0` |
 | `uptime` | number | 服务启动至今的秒数（`SystemClock.elapsedRealtime` 计算，不受系统对时跳变影响） |
 | `port` | number | 监听端口，固定 `8791` |
 | `banner` | string | `showing` 表示横幅正在显示，`idle` 表示没有横幅 |
+| `muted` | boolean | 是否处于「闭关免扰（全局静音）」模式 |
+| `position` | string | 当前电视端配置的默认横幅显形方位 |
 
 非 `GET` 返回 `405`；路径不匹配（含多段路径）仍走原有 `404` 兜底。
 
@@ -262,6 +275,54 @@ binary_sensor:
     resource: "http://192.168.1.23:8791/health"
     value_template: "{{ value_json.ok }}"
     scan_interval: 60
+```
+
+---
+
+## 📱 手机端 Web 控制台与管理接口
+
+### 1. 单页 Web 控制台：`GET /{token}`
+直接在手机浏览器或扫电视右侧二维码打开：
+```
+http://<电视IP>:8791/<token>
+```
+- **纯内联零依赖**：零外部 CDN 请求，局域网离线秒开。
+- **直观传音**：在手机上直接输入标题、正文、选择方位（顶部/底部/画中画）、勾选 TTS 语音播报或快照轮询，一键发送到电视。
+- **一键消散**：随时在手机端消散电视上停留的常驻横幅。
+- **简录回看**：实时查看电视端最近 20 条传音简录，支持一键重发。
+- **阵法调控**：一键切换闭关免扰（静音模式）与更改电视默认显形方位。
+- **示例生成**：自动生成当前参数的 `cURL` 命令，方便复制到自动化脚本。
+
+### 2. 传音简录：`GET /{token}/history`
+获取最近 20 条通知的历史记录数组：
+```bash
+curl "http://192.168.1.23:8791/k7m2p9x4/history"
+```
+```json
+[
+  {
+    "id": "1730419200000",
+    "timestamp": 1730419200000,
+    "title": "洗衣机已完成",
+    "text": "晾晒提醒：衣服可以收了",
+    "level": "info",
+    "position": "top",
+    "has_media": false,
+    "sticky": false,
+    "tts": "true"
+  }
+]
+```
+
+### 3. 阵法配置：`POST /{token}/config`
+动态更改闭关免扰（静音）开关或默认方位：
+```bash
+curl -X POST "http://192.168.1.23:8791/k7m2p9x4/config" \
+  -H 'Content-Type: application/json' \
+  -d '{"muted": true, "position": "top-right"}'
+```
+```json
+{"ok":true,"muted":true,"position":"top-right"}
 ```
 
 ---

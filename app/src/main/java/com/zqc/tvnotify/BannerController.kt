@@ -24,13 +24,13 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
 import android.text.TextUtils
 import android.util.Base64
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
-import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
 import android.widget.FrameLayout
@@ -44,6 +44,8 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.ArrayDeque
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -68,11 +70,31 @@ enum class BannerLevel {
     }
 }
 
+/** 横幅展示方位。支持顶部居中、底部居中及四角画中画 (PiP) 模式。 */
+enum class BannerPosition(val raw: String) {
+    TOP("top"),
+    BOTTOM("bottom"),
+    TOP_RIGHT("top-right"),
+    TOP_LEFT("top-left"),
+    BOTTOM_RIGHT("bottom-right"),
+    BOTTOM_LEFT("bottom-left");
+
+    val isTop: Boolean
+        get() = this == TOP || this == TOP_RIGHT || this == TOP_LEFT
+
+    val isPip: Boolean
+        get() = this == TOP_RIGHT || this == TOP_LEFT || this == BOTTOM_RIGHT || this == BOTTOM_LEFT
+
+    companion object {
+        fun fromRaw(raw: String?, fallback: BannerPosition = TOP): BannerPosition {
+            val normalized = raw?.trim()?.lowercase()?.replace("_", "-") ?: return fallback
+            return entries.firstOrNull { it.raw == normalized } ?: fallback
+        }
+    }
+}
+
 /**
- * 一条待展示的横幅。
- *
- * 用数据类而不是 7 个参数的函数：HTTP 层与设置界面的「测试通知」共用同一份契约，
- * 后续再加字段（图标、声音选择等）也不会改变 [BannerController.show] 的签名。
+ * 一条待展示的横幅契约。
  */
 data class BannerRequest(
     val title: String = "",
@@ -86,7 +108,17 @@ data class BannerRequest(
     val imageBase64: String? = null,
     val videoUrl: String? = null,
     /** 内置抽帧动画：直接读 assets/testframes 循环播放，不依赖任何网络/服务 */
-    val assetFrames: Boolean = false
+    val assetFrames: Boolean = false,
+    /** 可选通知唯一标识：若当前展示的横幅具相同 id，则原地平滑更新文案/倒计时，无重新入场闪烁 */
+    val id: String? = null,
+    /** 指定展示方位，空则继承电视全局默认方位 */
+    val position: BannerPosition? = null,
+    /** 原生 TTS 语音播报文本；传 "true" 时自动朗读标题与正文 */
+    val tts: String? = null,
+    /** 静态快照定时刷新间隔（毫秒），大于 0 时自动启动低开销准视频流模式 */
+    val imageIntervalMs: Int = 0,
+    /** 是否开启排队展示：true 时若当前已有横幅在展示，则进入队列顺延播放，不抢占顶替 */
+    val queue: Boolean = false
 ) {
     val hasMedia: Boolean
         get() = assetFrames || !videoUrl.isNullOrBlank() || !imageUrl.isNullOrBlank() ||
@@ -104,16 +136,6 @@ data class BannerRequest(
 
 /**
  * tvOS 风格与仙侠传音玉简横幅控制器：用 WindowManager 悬浮窗自绘。
- *
- * 为什么不用系统 Notification：电视的 notification shade 被裁掉（遥控器无法下拉），
- * 且 `cmd notification post` 在 API 23 上不存在，唯一可靠的展示方式是悬浮窗。
- *
- * API 23 特殊约束：
- * - API 23~25 没有 TYPE_APPLICATION_OVERLAY，只能用 TYPE_PHONE；
- *   部分 ROM 会拒绝 TYPE_PHONE，因此 addView 失败时降级重试 TYPE_SYSTEM_ERROR。
- * - 必须带 FLAG_NOT_FOCUSABLE，否则会抢走遥控器焦点，把用户从当前 App 踢出去。
- * - 窗口同时是 NOT_TOUCHABLE / NOT_FOCUSABLE，用户无法「点掉」横幅，
- *   所以 sticky 模式必须有 maxDuration 兜底，否则只能重启电视。
  */
 class BannerController(private val context: Context) {
 
@@ -127,15 +149,13 @@ class BannerController(private val context: Context) {
         private const val MIN_MAX_DURATION_SEC = BannerRequest.MIN_MAX_DURATION_SEC
         private const val MAX_MAX_DURATION_SEC = BannerRequest.MAX_MAX_DURATION_SEC
 
-        /** 屏宽占比：正文放到 4 行后需要更宽的可视区域，否则中文长句会被切得过碎 */
+        /** 屏宽占比：正文居中宽卡片 vs 四角画中画紧凑卡片 */
         private const val BANNER_WIDTH_RATIO = 0.65f
         private const val BANNER_WIDTH_RATIO_WITH_MEDIA = 0.78f
-        private const val BANNER_TOP_MARGIN_DP = 32f
+        private const val BANNER_PIP_WIDTH_RATIO = 0.42f
+        private const val BANNER_PIP_WIDTH_RATIO_WITH_MEDIA = 0.48f
 
-        /**
-         * 首帧布局之前的占位位移，仅用于「alpha=0 的不可见阶段」；
-         * 真正的入场起点在 [playEnterAnimation] 里用测量后的实际高度计算。
-         */
+        private const val BANNER_MARGIN_DP = 28f
         private const val FALLBACK_HEIGHT_DP = 76f
 
         /** sticky 模式下 KEEP_SCREEN_ON 的保留窗口：超时后撤销，避免电视永不熄屏 */
@@ -144,13 +164,6 @@ class BannerController(private val context: Context) {
         /** 等待主线程完成「读状态 + 移除视图」的上限，超时按「无横幅」作答 */
         private const val DISMISS_WAIT_MS = 500L
 
-        /**
-         * JPEG 魔数校验。
-         *
-         * 有过两次真实事故：资源文件里存的其实是 base64 文本（ASCII `/9j/`），
-         * BitmapFactory 只会安静地返回 null，界面表现为「一片空白」——
-         * 先验魔数就能把「文件坏了」和「解码器不支持」区分开。
-         */
         internal fun looksLikeJpeg(bytes: ByteArray): Boolean =
             bytes.size > 3 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte() &&
                     bytes[2] == 0xFF.toByte()
@@ -162,31 +175,41 @@ class BannerController(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val hideRunnable = Runnable { dismissAnimated() }
-
     private val clearKeepScreenOnRunnable = Runnable { clearKeepScreenOn() }
 
-    /**
-     * volatile：`GET /health` 在 NanoHTTPD 线程上读取「当前是否在展示」，
-     * 写入只发生在主线程。弱一致的瞬时状态对探活/幂等关闭来说完全够用。
-     */
     @Volatile
     private var bannerView: View? = null
-
     private var bannerParams: WindowManager.LayoutParams? = null
     private var currentAnimator: Animator? = null
     private var mediaPlayer: MediaPlayer? = null
     private var mediaPlayerResId: Int = 0
     private var activeMediaSession: MediaSession? = null
 
-    /** 媒体区「4 秒还没出画面」看门狗；横幅消失/被替换时必须撤销 */
+    /** 媒体区看门狗 */
     private var mediaWatchdog: Runnable? = null
+
+    // 状态与原地刷新缓存
+    private var currentRequestId: String? = null
+    private var currentPosition: BannerPosition = BannerPosition.TOP
+    private var currentTitleView: TextView? = null
+    private var currentBodyView: TextView? = null
+    private var currentBadgeView: TextView? = null
+    private var currentContainerView: LinearLayout? = null
+    private var currentIconView: View? = null
+
+    // 轻量级 FIFO 排队队列（上限 5 条）
+    private val requestQueue = ArrayDeque<BannerRequest>()
+
+    // 原生 TTS 语音引擎
+    private var ttsEngine: TextToSpeech? = null
+    private var ttsReady: Boolean = false
+    private var ttsInitInProgress: Boolean = false
+    private var pendingTtsText: String? = null
 
     fun isShowing(): Boolean = bannerView != null
 
     /**
      * 展示横幅。可在任意线程调用，内部统一切主线程。
-     *
-     * @param request 见 [BannerRequest]；sticky 时忽略 durationSeconds，改用 maxDurationSeconds
      */
     fun show(request: BannerRequest) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
@@ -197,14 +220,35 @@ class BannerController(private val context: Context) {
             Log.w(TAG, "缺少 SYSTEM_ALERT_WINDOW 权限，横幅被丢弃")
             return
         }
-        // 抢占式替换：彻底清理上一条（含动画、倒计时、熄屏撤销任务），再重新入场
+
+        // 1. 若开启排队模式且当前正在显示横幅，且不是同 ID 刷新，则排队顺延
+        if (request.queue && isShowing() && (request.id.isNullOrBlank() || request.id != currentRequestId)) {
+            if (requestQueue.size >= 5) {
+                requestQueue.removeFirst()
+            }
+            requestQueue.addLast(request)
+            Log.i(TAG, "横幅排队顺延，当前队列深度: ${requestQueue.size}")
+            return
+        }
+
+        // 2. 同 ID 原地刷新（无闪烁更新文字、倒计时与级别颜色）
+        if (!request.id.isNullOrBlank() && request.id == currentRequestId && bannerView != null) {
+            updateBannerInPlace(request)
+            return
+        }
+
+        // 3. 正常展示新横幅（抢占清理上一条）
         removeBannerNow()
 
-        val view = buildBannerView(request)
-        val params = buildLayoutParams(request.hasMedia)
-        // 先置为不可见，避免 addView 后到动画开始之间闪一下
+        val targetPosition = request.position ?: BannerPosition.fromRaw(Prefs.getBannerPosition(context))
+        currentPosition = targetPosition
+        currentRequestId = request.id
+
+        val view = buildBannerView(request, targetPosition)
+        val params = buildLayoutParams(targetPosition, request.hasMedia)
+
         view.alpha = 0f
-        view.translationY = -dp(FALLBACK_HEIGHT_DP).toFloat()
+        view.translationY = if (targetPosition.isTop) -dp(FALLBACK_HEIGHT_DP).toFloat() else dp(FALLBACK_HEIGHT_DP).toFloat()
 
         if (!addViewSafely(view, params)) {
             activeMediaSession?.stop()
@@ -219,8 +263,8 @@ class BannerController(private val context: Context) {
         if (request.sound) {
             playSound()
         }
+        speakTtsIfNeeded(request)
 
-        // 高度要等首帧布局完成才准确，动画起点依赖真实高度，因此监听一次布局
         view.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
             override fun onLayoutChange(
                 v: View,
@@ -235,11 +279,50 @@ class BannerController(private val context: Context) {
             ) {
                 v.removeOnLayoutChangeListener(this)
                 if (bannerView === v) {
-                    playEnterAnimation(v)
+                    playEnterAnimation(v, targetPosition)
                 }
             }
         })
 
+        scheduleAutoHide(request)
+    }
+
+    /**
+     * 同 ID 原地平滑更新（无重入动画，不重置悬浮窗）
+     */
+    private fun updateBannerInPlace(request: BannerRequest) {
+        val theme = Theme.current(context)
+        val trimmedTitle = request.title.trim()
+        val trimmedText = request.text.trim()
+
+        currentTitleView?.text = if (trimmedTitle.isNotEmpty()) trimmedTitle else if (theme == Theme.XIUXIAN) "传音灵讯" else "系统通知"
+        currentBodyView?.let { body ->
+            if (trimmedText.isNotEmpty()) {
+                body.text = trimmedText
+                body.visibility = View.VISIBLE
+            } else {
+                body.visibility = View.GONE
+            }
+        }
+
+        val badgeColor = theme.bannerIconColor(request.level)
+        currentBadgeView?.apply {
+            text = theme.levelBadgeText(request.level)
+            setTextColor(badgeColor)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(6f).toFloat()
+                setColor(Color.argb(0x2A, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
+                setStroke(dp(1f), Color.argb(0x66, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
+            }
+        }
+
+        currentContainerView?.background = buildBannerBackground(theme, request.level)
+
+        if (request.sound) {
+            playSound()
+        }
+        speakTtsIfNeeded(request)
         scheduleAutoHide(request)
     }
 
@@ -249,15 +332,15 @@ class BannerController(private val context: Context) {
             mainHandler.post { dismissImmediately() }
             return
         }
+        requestQueue.clear()
         removeBannerNow()
     }
 
-    /**
-     * 供 `POST /{token}/dismiss` 调用：关闭横幅并回答「调用前是否真的有横幅」。
-     */
+    /** 供 `POST /{token}/dismiss` 调用：关闭横幅并回答「调用前是否真的有横幅」。 */
     fun dismissWithResult(): Boolean {
         if (Looper.myLooper() == Looper.getMainLooper()) {
             val wasShowing = isShowing()
+            requestQueue.clear()
             dismissAnimated()
             return wasShowing
         }
@@ -266,6 +349,7 @@ class BannerController(private val context: Context) {
         val posted = mainHandler.post {
             try {
                 wasShowing.set(isShowing())
+                requestQueue.clear()
                 dismissAnimated()
             } finally {
                 latch.countDown()
@@ -282,14 +366,107 @@ class BannerController(private val context: Context) {
         }
     }
 
-    /** 释放提示音资源，Service / Activity 销毁时必须调用。 */
+    /** 释放资源，Service / Activity 销毁时调用。 */
     fun release() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             mainHandler.post { release() }
             return
         }
+        requestQueue.clear()
         removeBannerNow()
         releaseMediaPlayer()
+        releaseTts()
+    }
+
+    // ------------------------------------------------------------------
+    // 原生 TTS 语音播报（灵音传诵）
+    // ------------------------------------------------------------------
+
+    private fun speakTtsIfNeeded(request: BannerRequest) {
+        val ttsVal = request.tts?.trim() ?: return
+        if (ttsVal.isEmpty() || Prefs.isMuted(context)) return
+
+        val textToSpeak = if (ttsVal.equals("true", ignoreCase = true)) {
+            val title = request.title.trim()
+            val body = request.text.trim()
+            when {
+                title.isNotEmpty() && body.isNotEmpty() -> "$title。$body"
+                title.isNotEmpty() -> title
+                else -> body
+            }
+        } else {
+            ttsVal
+        }
+
+        if (textToSpeak.isBlank()) return
+
+        if (ttsReady && ttsEngine != null) {
+            speakInternal(textToSpeak)
+            return
+        }
+        pendingTtsText = textToSpeak
+        if (!ttsInitInProgress) {
+            initTts()
+        }
+    }
+
+    private fun initTts() {
+        if (ttsEngine != null || ttsInitInProgress) return
+        ttsInitInProgress = true
+        try {
+            ttsEngine = TextToSpeech(context.applicationContext) { status ->
+                mainHandler.post {
+                    ttsInitInProgress = false
+                    if (status == TextToSpeech.SUCCESS) {
+                        ttsEngine?.let { engine ->
+                            try {
+                                val langResult = engine.setLanguage(Locale.CHINESE)
+                                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                                    engine.setLanguage(Locale.getDefault())
+                                }
+                            } catch (_: Exception) {}
+                            ttsReady = true
+                            pendingTtsText?.let {
+                                pendingTtsText = null
+                                speakInternal(it)
+                            }
+                        }
+                    } else {
+                        Log.w(TAG, "TextToSpeech 初始化失败 status=$status")
+                        pendingTtsText = null
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            ttsInitInProgress = false
+            pendingTtsText = null
+            Log.w(TAG, "初始化 TextToSpeech 发生异常", e)
+        }
+    }
+
+    private fun speakInternal(text: String) {
+        if (Prefs.isMuted(context)) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                ttsEngine?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "tvnotify_tts")
+            } else {
+                @Suppress("DEPRECATION")
+                ttsEngine?.speak(text, TextToSpeech.QUEUE_FLUSH, null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "TTS 播报执行异常", e)
+        }
+    }
+
+    private fun releaseTts() {
+        try {
+            ttsEngine?.stop()
+            ttsEngine?.shutdown()
+        } catch (_: Exception) {}
+        ttsEngine = null
+        ttsReady = false
+        ttsInitInProgress = false
+        pendingTtsText = null
     }
 
     // ------------------------------------------------------------------
@@ -327,6 +504,10 @@ class BannerController(private val context: Context) {
     // ------------------------------------------------------------------
 
     private fun playSound() {
+        if (Prefs.isMuted(context)) {
+            Log.d(TAG, "闭关免扰模式生效，静默不播放提示音")
+            return
+        }
         val player = ensureMediaPlayer() ?: return
         try {
             if (player.isPlaying) {
@@ -344,7 +525,6 @@ class BannerController(private val context: Context) {
 
     @Suppress("DEPRECATION")
     private fun ensureMediaPlayer(): MediaPlayer? {
-        // 主题切换后必须换音效：缓存实例与创建时的主题资源绑定，不一致就重建
         val resId = soundResId()
         if (mediaPlayer != null && mediaPlayerResId != resId) {
             releaseMediaPlayer()
@@ -393,12 +573,16 @@ class BannerController(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
-    // 动画：滑入 + 淡入 + 灵气浮现微缩放
+    // 动画：滑入 + 淡入 + 微缩放（支持上下不同方向）
     // ------------------------------------------------------------------
 
-    private fun playEnterAnimation(view: View) {
+    private fun playEnterAnimation(view: View, position: BannerPosition) {
         val height = if (view.height > 0) view.height else dp(FALLBACK_HEIGHT_DP)
-        val startY = -(height + dp(BANNER_TOP_MARGIN_DP)).toFloat()
+        val startY = if (position.isTop) {
+            -(height + dp(BANNER_MARGIN_DP)).toFloat()
+        } else {
+            (height + dp(BANNER_MARGIN_DP)).toFloat()
+        }
         view.translationY = startY
         view.alpha = 0f
         view.scaleX = 0.94f
@@ -409,26 +593,37 @@ class BannerController(private val context: Context) {
     private fun dismissAnimated() {
         mainHandler.removeCallbacks(hideRunnable)
         mainHandler.removeCallbacks(clearKeepScreenOnRunnable)
-        // 动画开始前即刻切断视频/图片流，避免在退场阶段继续耗费 CPU 解码帧
         activeMediaSession?.stop()
         activeMediaSession = null
         cancelMediaWatchdog()
 
         val view = bannerView ?: return
         val height = if (view.height > 0) view.height else dp(FALLBACK_HEIGHT_DP)
-        val endY = -(height + dp(BANNER_TOP_MARGIN_DP)).toFloat()
+        val endY = if (currentPosition.isTop) {
+            -(height + dp(BANNER_MARGIN_DP)).toFloat()
+        } else {
+            (height + dp(BANNER_MARGIN_DP)).toFloat()
+        }
         animate(view, view.translationY, endY, view.alpha, 0f, view.scaleX, 0.95f, EXIT_DURATION_MS) {
             removeViewSafely(view)
             if (bannerView === view) {
                 bannerView = null
                 bannerParams = null
+                currentRequestId = null
+                currentTitleView = null
+                currentBodyView = null
+                currentBadgeView = null
+                currentContainerView = null
+                currentIconView = null
+            }
+            // 若队列有等待通知，衔接播放下一条
+            if (requestQueue.isNotEmpty()) {
+                val next = requestQueue.removeFirst()
+                mainHandler.post { show(next) }
             }
         }
     }
 
-    /**
-     * 单属性驱动同时插值 translationY、alpha 与 scale，保证动画取消干净且流畅。
-     */
     private fun animate(
         view: View,
         fromY: Float,
@@ -481,35 +676,38 @@ class BannerController(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
-    // 视图构建：玉简仙侠灵讯横幅 vs tvOS 现代深色卡片
+    // 视图构建
     // ------------------------------------------------------------------
 
-    private fun buildBannerView(request: BannerRequest): View {
+    private fun buildBannerView(request: BannerRequest, position: BannerPosition): View {
         val trimmedTitle = request.title.trim()
         val trimmedText = request.text.trim()
         val theme = Theme.current(context)
 
         val container = LinearLayout(context)
+        currentContainerView = container
         container.orientation = LinearLayout.HORIZONTAL
         container.gravity = Gravity.CENTER_VERTICAL
         if (theme == Theme.XIUXIAN) {
-            container.setPadding(dp(24f), dp(18f), dp(24f), dp(19f))
+            container.setPadding(dp(22f), dp(16f), dp(22f), dp(17f))
         } else {
-            container.setPadding(dp(20f), dp(14f), dp(20f), dp(15f))
+            container.setPadding(dp(18f), dp(13f), dp(18f), dp(14f))
         }
         container.background = buildBannerBackground(theme, request.level)
 
-        // 传音玉简法宝图标：修仙与深色两套主题统一采用专属玉简灵力声波图标
-        val iconSize = dp(if (theme == Theme.XIUXIAN) 38f else 32f)
+        // 玉简法宝图标
+        val iconSize = dp(if (theme == Theme.XIUXIAN) 36f else 30f)
         val iconParams = LinearLayout.LayoutParams(iconSize, iconSize)
         iconParams.gravity = Gravity.CENTER_VERTICAL
-        iconParams.setMargins(0, 0, dp(16f), 0)
-        container.addView(JadeSlipIconView(context, theme.bannerIconColor(request.level)), iconParams)
+        iconParams.setMargins(0, 0, dp(14f), 0)
+        val icon = JadeSlipIconView(context, theme.bannerIconColor(request.level))
+        currentIconView = icon
+        container.addView(icon, iconParams)
 
         val column = LinearLayout(context)
         column.orientation = LinearLayout.VERTICAL
 
-        // 标题行：包含分级角标（[传音] / [灵警] / [告急]）+ 主标题
+        // 标题行
         val headerRow = LinearLayout(context)
         headerRow.orientation = LinearLayout.HORIZONTAL
         headerRow.gravity = Gravity.CENTER_VERTICAL
@@ -517,10 +715,10 @@ class BannerController(private val context: Context) {
         val badgeColor = theme.bannerIconColor(request.level)
         val badgeView = TextView(context).apply {
             text = theme.levelBadgeText(request.level)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             setTextColor(badgeColor)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(dp(7f), dp(1f), dp(7f), dp(1f))
+            setPadding(dp(6f), dp(1f), dp(6f), dp(1f))
             includeFontPadding = false
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
@@ -529,6 +727,7 @@ class BannerController(private val context: Context) {
                 setStroke(dp(1f), Color.argb(0x66, Color.red(badgeColor), Color.green(badgeColor), Color.blue(badgeColor)))
             }
         }
+        currentBadgeView = badgeView
         val badgeParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -538,55 +737,56 @@ class BannerController(private val context: Context) {
         headerRow.addView(badgeView, badgeParams)
 
         val finalTitle = if (trimmedTitle.isNotEmpty()) trimmedTitle else if (theme == Theme.XIUXIAN) "传音灵讯" else "系统通知"
-        val titleView = buildTitleView(finalTitle, theme, request.level)
+        val titleView = buildTitleView(finalTitle, theme, request.level, position.isPip)
+        currentTitleView = titleView
         val titleParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         headerRow.addView(titleView, titleParams)
         column.addView(headerRow)
 
         if (trimmedText.isNotEmpty()) {
-            column.addView(buildBodyView(trimmedText, theme))
+            val bodyView = buildBodyView(trimmedText, theme, position.isPip)
+            currentBodyView = bodyView
+            column.addView(bodyView)
         } else if (trimmedTitle.isEmpty()) {
-            column.addView(buildBodyView("（空通知）", theme))
+            val bodyView = buildBodyView("（空通知）", theme, position.isPip)
+            currentBodyView = bodyView
+            column.addView(bodyView)
         }
 
         val columnParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         container.addView(column, columnParams)
 
-        // 右侧媒体视窗（静态图片或动态 MJPEG 视频流）
+        // 媒体视窗（静态图片、快照轮询或动态 MJPEG 视频流）
         if (request.hasMedia) {
-            val mediaCard = buildMediaCard(theme, request)
+            val mediaCard = buildMediaCard(theme, request, position.isPip)
             container.addView(mediaCard)
         }
 
         return container
     }
 
-    /**
-     * 横幅底色：渐变背景 + 灵光描边 + 大圆角。
-     */
     private fun buildBannerBackground(theme: Theme, level: BannerLevel): GradientDrawable {
         val drawable = GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
             intArrayOf(theme.bannerBackgroundStart, theme.bannerBackgroundEnd)
         )
         drawable.shape = GradientDrawable.RECTANGLE
-        drawable.cornerRadius = dp(if (theme == Theme.XIUXIAN) 22f else 16f).toFloat()
-        drawable.setStroke(dp(if (theme == Theme.XIUXIAN) 2f else 1.5f), theme.bannerStrokeColor(level))
+        drawable.cornerRadius = dp(if (theme == Theme.XIUXIAN) 20f else 15f).toFloat()
+        drawable.setStroke(dp(if (theme == Theme.XIUXIAN) 1.8f else 1.3f), theme.bannerStrokeColor(level))
         return drawable
     }
 
-    private fun buildTitleView(title: String, theme: Theme, level: BannerLevel): TextView {
+    private fun buildTitleView(title: String, theme: Theme, level: BannerLevel, isPip: Boolean): TextView {
         val view = TextView(context)
         view.text = title
         view.setTextColor(theme.bannerTitle)
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isPip) 16f else 18f)
         view.typeface = if (theme.bannerTitleSerif) {
             Typeface.SERIF
         } else {
             Typeface.DEFAULT_BOLD
         }
         if (theme == Theme.XIUXIAN) {
-            // 仙玉灵光文字晕染阴影
             val glowColor = theme.bannerIconColor(level)
             view.setShadowLayer(
                 8f, 0f, 1f,
@@ -599,26 +799,31 @@ class BannerController(private val context: Context) {
         return view
     }
 
-    private fun buildBodyView(text: String, theme: Theme): TextView {
+    private fun buildBodyView(text: String, theme: Theme, isPip: Boolean): TextView {
         val view = TextView(context)
         view.text = text
         view.setTextColor(theme.bannerBodyText)
         if (theme == Theme.XIUXIAN) {
             view.typeface = Typeface.SERIF
         }
-        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-        view.maxLines = 4
+        view.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isPip) 13.5f else 15f)
+        view.maxLines = if (isPip) 3 else 4
         view.ellipsize = TextUtils.TruncateAt.END
         view.includeFontPadding = false
-        view.setLineSpacing(dp(3f).toFloat(), 1f)
-        view.setPadding(0, dp(5f), 0, 0)
+        view.setLineSpacing(dp(2.5f).toFloat(), 1f)
+        view.setPadding(0, dp(4f), 0, 0)
         return view
     }
 
-    private fun buildLayoutParams(hasMedia: Boolean): WindowManager.LayoutParams {
+    private fun buildLayoutParams(position: BannerPosition, hasMedia: Boolean): WindowManager.LayoutParams {
         val screenWidth = context.resources.displayMetrics.widthPixels
-        val ratio = if (hasMedia) BANNER_WIDTH_RATIO_WITH_MEDIA else BANNER_WIDTH_RATIO
-        val width = (screenWidth * ratio).toInt()
+        val ratio = if (position.isPip) {
+            if (hasMedia) BANNER_PIP_WIDTH_RATIO_WITH_MEDIA else BANNER_PIP_WIDTH_RATIO
+        } else {
+            if (hasMedia) BANNER_WIDTH_RATIO_WITH_MEDIA else BANNER_WIDTH_RATIO
+        }
+        val minWidth = dp(if (position.isPip) 300f else 440f)
+        val width = (screenWidth * ratio).toInt().coerceAtLeast(minWidth)
 
         val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -638,28 +843,57 @@ class BannerController(private val context: Context) {
             flags,
             PixelFormat.TRANSLUCENT
         )
-        params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-        params.y = dp(BANNER_TOP_MARGIN_DP)
+
+        val margin = dp(BANNER_MARGIN_DP)
+        when (position) {
+            BannerPosition.TOP -> {
+                params.gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                params.y = margin
+            }
+            BannerPosition.BOTTOM -> {
+                params.gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                params.y = margin
+            }
+            BannerPosition.TOP_RIGHT -> {
+                params.gravity = Gravity.TOP or Gravity.END
+                params.x = margin
+                params.y = margin
+            }
+            BannerPosition.TOP_LEFT -> {
+                params.gravity = Gravity.TOP or Gravity.START
+                params.x = margin
+                params.y = margin
+            }
+            BannerPosition.BOTTOM_RIGHT -> {
+                params.gravity = Gravity.BOTTOM or Gravity.END
+                params.x = margin
+                params.y = margin
+            }
+            BannerPosition.BOTTOM_LEFT -> {
+                params.gravity = Gravity.BOTTOM or Gravity.START
+                params.x = margin
+                params.y = margin
+            }
+        }
         return params
     }
 
     // ------------------------------------------------------------------
-    // 多媒体视窗构建与会话管理（静态图片 + 动态 MJPEG 视频流）
+    // 多媒体视窗构建与会话管理
     // ------------------------------------------------------------------
 
-    private fun buildMediaCard(theme: Theme, request: BannerRequest): View {
-        // 媒体窗按屏宽自适应：手机竖屏下固定 220dp 会撑破横幅窗口，整块媒体区被裁掉
+    private fun buildMediaCard(theme: Theme, request: BannerRequest, isPip: Boolean): View {
         val bannerWidthPx = (context.resources.displayMetrics.widthPixels *
-                BANNER_WIDTH_RATIO_WITH_MEDIA).toInt()
-        val mediaWidth = minOf(dp(220f), (bannerWidthPx * 0.34f).toInt()).coerceAtLeast(dp(96f))
-        val mediaHeight = (mediaWidth * 9 / 16).coerceAtLeast(dp(54f))
+                (if (isPip) BANNER_PIP_WIDTH_RATIO_WITH_MEDIA else BANNER_WIDTH_RATIO_WITH_MEDIA)).toInt()
+        val mediaWidth = minOf(dp(if (isPip) 160f else 220f), (bannerWidthPx * 0.36f).toInt()).coerceAtLeast(dp(88f))
+        val mediaHeight = (mediaWidth * 9 / 16).coerceAtLeast(dp(50f))
 
-        val mediaCornerRadius = dp(if (theme == Theme.XIUXIAN) 14f else 10f).toFloat()
+        val mediaCornerRadius = dp(if (theme == Theme.XIUXIAN) 13f else 10f).toFloat()
 
         val frame = FrameLayout(context).apply {
             layoutParams = LinearLayout.LayoutParams(mediaWidth, mediaHeight).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                setMargins(dp(16f), 0, 0, 0)
+                setMargins(dp(14f), 0, 0, 0)
             }
             val strokeColor = if (theme == Theme.XIUXIAN) {
                 theme.bannerStrokeColor(request.level)
@@ -672,9 +906,6 @@ class BannerController(private val context: Context) {
                 setColor(if (theme == Theme.XIUXIAN) Color.argb(0xA0, 0x09, 0x16, 0x1A) else Color.argb(0xA0, 0x15, 0x16, 0x1A))
                 setStroke(dp(1.2f), strokeColor)
             }
-            // 圆角裁剪交给 RoundedCornerImageView（canvas 裁剪），不用 clipToOutline：
-            // outline 在 attach 时按当时尺寸（可能还是 0×0）算一次，Android 12+ 会缓存成
-            // 空裁剪，媒体区整块不可见——电视正常、新手机上图片视频全无就是这个坑。
         }
 
         val imageView = RoundedCornerImageView(context, mediaCornerRadius).apply {
@@ -684,12 +915,10 @@ class BannerController(private val context: Context) {
             )
             scaleType = ImageView.ScaleType.CENTER_CROP
         }
-        // 状态行：媒体卡在、但图片/视频没出来时，把卡在哪一步直接显示出来，
-        // 没有 logcat 也能定位（这次手机端两路都空，就是靠它才能一次看清原因）
         val status = MediaStatus()
         val placeholder = TextView(context).apply {
             text = if (theme == Theme.XIUXIAN) "灵图凝聚中…" else "正在载入…"
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
             setTextColor(Color.argb(0xCC, 0xFF, 0xFF, 0xFF))
             gravity = Gravity.CENTER
             includeFontPadding = false
@@ -711,21 +940,13 @@ class BannerController(private val context: Context) {
         val prefix = if (theme == Theme.XIUXIAN) "灵图未显：" else "未加载："
         val markFailed = Runnable { showStatus(prefix + status.step) }
 
-        // 看门狗：4 秒还没出画面就把最后一步显示出来，避免只看到「凝聚中…」干等
-        // 必须存下来，横幅消失时要撤销：否则它会在 4 秒后回写一条已经销毁的视图，
-        // 甚至把「新横幅」的状态行改成失败文案。
         val watchdog = Runnable {
             if (imageView.drawable == null) markFailed.run()
         }
-        val mediaWidthActual = mediaWidth
-        Log.i(
-            TAG,
-            "媒体卡构建：${mediaWidthActual}x${mediaHeight}px video=${request.videoUrl != null} " +
-                "imgUrl=${request.imageUrl != null} b64=${request.imageBase64?.length ?: 0}"
-        )
 
-        // 动态流角标
-        if (!request.videoUrl.isNullOrBlank()) {
+        // 动态流或快照轮询角标
+        val isLiveStream = !request.videoUrl.isNullOrBlank() || (request.imageIntervalMs > 0 && !request.imageUrl.isNullOrBlank())
+        if (isLiveStream) {
             val liveBadge = TextView(context).apply {
                 text = if (theme == Theme.XIUXIAN) "灵镜" else "LIVE"
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
@@ -773,6 +994,7 @@ class BannerController(private val context: Context) {
                                 val fallback = ImageMediaSession(
                                     imageUrl = request.imageUrl,
                                     imageBase64 = request.imageBase64,
+                                    imageIntervalMs = request.imageIntervalMs,
                                     targetView = imageView,
                                     mainHandler = mainHandler,
                                     status = status,
@@ -792,6 +1014,7 @@ class BannerController(private val context: Context) {
             ImageMediaSession(
                 imageUrl = request.imageUrl,
                 imageBase64 = request.imageBase64,
+                imageIntervalMs = request.imageIntervalMs,
                 targetView = imageView,
                 mainHandler = mainHandler,
                 status = status,
@@ -810,18 +1033,10 @@ class BannerController(private val context: Context) {
         fun stop()
     }
 
-    /** 媒体加载进度：最后一步写在这里，失败时直接显示到横幅上 */
     private class MediaStatus {
         @Volatile var step: String = "未开始"
     }
 
-    /**
-     * 内置抽帧动画会话：直接读 `assets/testframes/` 里的 JPEG 循环播放。
-     *
-     * 为什么不走本机 `/{token}/stream`：内置测试的意义是「不依赖任何外部条件也能验证
-     * 媒体卡渲染」。走 HTTP 时只要服务没起、端口被占、明文被拦，用户看到的就只是一块
-     * 空白，测试本身失去了排除变量的作用。抽帧在 App 内直接解码，零网络依赖。
-     */
     private class AssetFramesSession(
         private val assets: android.content.res.AssetManager,
         private val targetView: ImageView,
@@ -840,7 +1055,6 @@ class BannerController(private val context: Context) {
                 val bytes = frames[frameIndex % frames.size]
                 frameIndex++
                 val bitmap = if (!looksLikeJpeg(bytes)) {
-                    // 资源损坏时给出可读原因，而不是一个空白的 null
                     if (frameIndex == 1) {
                         status.step = "抽帧非JPEG(${bytes.size}B ${bytes.take(3).joinToString("") { "%02x".format(it) }})"
                         onFailed?.invoke()
@@ -876,13 +1090,11 @@ class BannerController(private val context: Context) {
                         if (!name.lowercase().endsWith(".jpg") && !name.lowercase().endsWith(".jpeg")) continue
                         try {
                             assets.open("$ASSET_DIR/$name").use { loaded.add(it.readBytes()) }
-                        } catch (_: Exception) {
-                        }
+                        } catch (_: Exception) {}
                     }
                     frames = loaded
                     status.step = "抽帧 ${loaded.size} 张"
                     if (loaded.isEmpty()) {
-                        // SAM 转换的 lambda 里不能用 return（非局部返回），这里用分支表达
                         onFailed?.invoke()
                     } else {
                         mainHandler.post(tick)
@@ -908,14 +1120,6 @@ class BannerController(private val context: Context) {
         }
     }
 
-    /**
-     * 圆角图片视图：用 canvas 裁剪代替 `clipToOutline`。
-     *
-     * 不用 clipToOutline + 自定义 ViewOutlineProvider 的原因：outline 在视图挂载时
-     * 就会按当时尺寸算一次，那时 width/height 往往还是 0×0，Android 12+ 会把空
-     * outline 缓存下来当作裁剪区域，等于把整块媒体区剪没了——电视（API 23）正常、
-     * 新手机上图片和视频都不显示就是这个原因。canvas 裁剪每次都按当前尺寸算，稳。
-     */
     private class RoundedCornerImageView(context: Context, private val radiusPx: Float) :
         ImageView(context) {
         private val clipPath = Path()
@@ -932,14 +1136,6 @@ class BannerController(private val context: Context) {
         }
     }
 
-    /**
-     * 局域网媒体下载专用的连接工厂。
-     *
-     * 必须关闭 HTTPS 证书校验：HA / NAS 上的摄像头快照与 MJPEG 流常是自签证书，
-     * 严格校验会让「推送方已经持有 token」的场景一律下载失败。
-     * 风险边界：URL 只来自通过 token 鉴权的 `/notify` 请求体与设置界面自测，
-     * 局域网内可信；仍打一条日志，让「为什么这里能连自签证书」有据可查。
-     */
     private object SafeNetworkHelper {
         @Volatile
         private var warnedInsecureTls = false
@@ -1075,7 +1271,7 @@ class BannerController(private val context: Context) {
                 inStreamRef = inStream
                 val parser = MjpegFrameParser(inStream)
                 var lastRenderTime = 0L
-                val minFrameIntervalMs = 66L // ~15 FPS 节流，低端电视芯片低负载运行
+                val minFrameIntervalMs = 66L
 
                 while (isRunning && !Thread.currentThread().isInterrupted) {
                     val frameData = parser.readNextFrame()
@@ -1091,7 +1287,6 @@ class BannerController(private val context: Context) {
                     lastRenderTime = now
                     frameCounter++
 
-                    // 智能降采样：检测摄像头原始分辨率（如 1080p 或 4K），按目标宽高 (480x270) 下采样解码，杜绝 OOM
                     if (!sampleDetected || frameCounter % 150 == 0) {
                         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                         BitmapFactory.decodeByteArray(frameData, 0, frameData.size, bounds)
@@ -1147,6 +1342,7 @@ class BannerController(private val context: Context) {
     private class ImageMediaSession(
         private val imageUrl: String?,
         private val imageBase64: String?,
+        private val imageIntervalMs: Int = 0,
         private val targetView: ImageView,
         private val mainHandler: Handler,
         private val status: MediaStatus,
@@ -1154,7 +1350,6 @@ class BannerController(private val context: Context) {
         private val onFailed: (() -> Unit)? = null
     ) : MediaSession {
         companion object {
-            /** 单张静态图上限 8MB：够 4K 截图，又能挡住无限流/超大文件把电视读成 OOM */
             private const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
         }
 
@@ -1193,13 +1388,44 @@ class BannerController(private val context: Context) {
                     mainHandler.post {
                         if (isRunning) {
                             if (bitmap != null) {
-                                // 不做淡入：曾用 alpha=0 + 动画的写法，动画一旦被打断
-                                // （视图刚挂载/被替换）图片就永久停在透明状态，直接置 1 更稳
                                 targetView.alpha = 1f
                                 targetView.setImageBitmap(bitmap)
                                 onLoaded?.invoke()
                             } else {
                                 onFailed?.invoke()
+                            }
+                        }
+                    }
+
+                    // 快照定时轮询（准视频流模式）
+                    val interval = imageIntervalMs.coerceIn(500, 10000).toLong()
+                    if (imageIntervalMs > 0 && !imageUrl.isNullOrBlank() && bitmap != null) {
+                        while (isRunning && !Thread.currentThread().isInterrupted) {
+                            try {
+                                Thread.sleep(interval)
+                            } catch (_: InterruptedException) {
+                                break
+                            }
+                            if (!isRunning) break
+                            val pollUrl = if (imageUrl.contains("?")) {
+                                "$imageUrl&_yjt=${SystemClock.uptimeMillis()}"
+                            } else {
+                                "$imageUrl?_yjt=${SystemClock.uptimeMillis()}"
+                            }
+                            try {
+                                val nextBytes = downloadImageBytes(pollUrl)
+                                if (nextBytes != null && nextBytes.isNotEmpty() && looksLikeJpeg(nextBytes)) {
+                                    val nextBitmap = decodeSampledBitmap(nextBytes, 480, 270)
+                                    if (nextBitmap != null && isRunning) {
+                                        mainHandler.post {
+                                            if (isRunning) {
+                                                targetView.setImageBitmap(nextBitmap)
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.d(TAG, "快照轮询偶发失败: ${e.message}")
                             }
                         }
                     }
@@ -1225,8 +1451,6 @@ class BannerController(private val context: Context) {
             connection = conn
             conn.connect()
             if (conn.responseCode != 200) return null
-            // 电视内存只有几百 MB，必须设上限：`readBytes()` 无上限，
-            // 指向长视频/挂掉的服务（无限流）时会把整个进程读成 OOM。
             val declared = conn.headerFields["Content-Length"]?.firstOrNull()?.toLongOrNull() ?: -1L
             if (declared > MAX_IMAGE_BYTES) {
                 Log.w(TAG, "图片过大，已放弃：${declared}B > ${MAX_IMAGE_BYTES}B")
@@ -1297,7 +1521,7 @@ class BannerController(private val context: Context) {
 
             if (!foundSoi) return null
 
-            var remainingLimit = 2 * 1024 * 1024 // 2MB 单帧防爆限制
+            var remainingLimit = 2 * 1024 * 1024
             while (remainingLimit-- > 0) {
                 val b = inStream.read()
                 if (b == -1) return null
@@ -1306,7 +1530,6 @@ class BannerController(private val context: Context) {
                     prevByte = -1
                     return buffer.toByteArray()
                 }
-                // 网络丢包容错：若上一帧意外断裂并在遇到 EOI 前提前出现了下一帧的起始标记 SOI，直接快速同步
                 if (prevByte == 0xFF && b == 0xD8) {
                     buffer.reset()
                     buffer.write(0xFF)
@@ -1364,12 +1587,17 @@ class BannerController(private val context: Context) {
         mainHandler.removeCallbacks(clearKeepScreenOnRunnable)
         cancelAnimation()
         bannerParams = null
+        currentRequestId = null
+        currentTitleView = null
+        currentBodyView = null
+        currentBadgeView = null
+        currentContainerView = null
+        currentIconView = null
         val view = bannerView ?: return
         bannerView = null
         removeViewSafely(view)
     }
 
-    /** 撤销媒体区看门狗，避免它对着已经移除（或被新横幅替换）的视图回写状态 */
     private fun cancelMediaWatchdog() {
         val watchdog = mediaWatchdog ?: return
         mediaWatchdog = null
@@ -1388,13 +1616,6 @@ class BannerController(private val context: Context) {
     // 自绘图标组件
     // ------------------------------------------------------------------
 
-    /**
-     * 传音玉简法宝图标：
-     * 1. 核心为温润剔透的竖置长方形仙玉简（羊脂玉/青白碧玉渐变与圆角）；
-     * 2. 玉简顶端有穿绳玉孔与云纹如意扣；
-     * 3. 左右两侧辐射出向外发散的「灵力共鸣声波环」，精准表达「千里传音」意境；
-     * 4. 颜色与微光随通知级别（碧青/灵金/朱砂赤）流动变色。
-     */
     private class JadeSlipIconView(context: Context, private val levelColor: Int) : View(context) {
 
         private val jadePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -1423,24 +1644,20 @@ class BannerController(private val context: Context) {
             val cx = w * 0.5f
             val cy = h * 0.5f
 
-            // 1. 左右灵波（声波共鸣弧线）
             val r1 = w * 0.36f
             val r2 = w * 0.46f
             val sweepAngle = 56f
 
-            // 内层灵力声波
             wavePaint.strokeWidth = w * 0.045f
             wavePaint.color = Color.argb(0xB3, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
             canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), 180f - sweepAngle / 2, sweepAngle, false, wavePaint)
             canvas.drawArc(RectF(cx - r1, cy - r1, cx + r1, cy + r1), -sweepAngle / 2, sweepAngle, false, wavePaint)
 
-            // 外层灵力声波
             wavePaint.strokeWidth = w * 0.035f
             wavePaint.color = Color.argb(0x55, Color.red(levelColor), Color.green(levelColor), Color.blue(levelColor))
             canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), 180f - sweepAngle / 2, sweepAngle, false, wavePaint)
             canvas.drawArc(RectF(cx - r2, cy - r2, cx + r2, cy + r2), -sweepAngle / 2, sweepAngle, false, wavePaint)
 
-            // 2. 玉简本体 (长宽比约 1:2.4)
             val jadeW = w * 0.30f
             val jadeH = h * 0.74f
             val left = cx - jadeW / 2
@@ -1449,7 +1666,6 @@ class BannerController(private val context: Context) {
             val bottom = cy + jadeH / 2
             val radius = jadeW * 0.22f
 
-            // 羊脂玉与灵碧微光渐变
             val shader = LinearGradient(
                 left, top, right, bottom,
                 intArrayOf(
@@ -1465,10 +1681,8 @@ class BannerController(private val context: Context) {
             canvas.drawRoundRect(jadeRect, radius, radius, jadePaint)
             canvas.drawRoundRect(jadeRect, radius, radius, borderPaint)
 
-            // 3. 玉简顶端系绳玉孔
             canvas.drawCircle(cx, top + jadeW * 0.36f, jadeW * 0.12f, notchPaint)
 
-            // 4. 玉简表面云符雕痕（微光阴刻线）
             val runePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.argb(0x70, 0xFF, 0xFF, 0xFF)
                 strokeWidth = w * 0.024f

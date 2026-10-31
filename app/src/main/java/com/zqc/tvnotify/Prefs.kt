@@ -5,7 +5,7 @@ import android.content.SharedPreferences
 import java.security.SecureRandom
 
 /**
- * 访问 token 的唯一持久化入口。
+ * 访问 token、主题、默认方位及闭关免扰等配置的唯一持久化入口。
  *
  * 设计要点：
  * 1. token 由「首次使用」时随机生成 8 位字母数字，写入 SharedPreferences；
@@ -18,6 +18,9 @@ object Prefs {
     private const val FILE_NAME = "tvnotify_prefs"
     private const val KEY_TOKEN = "access_token"
     private const val KEY_THEME = "ui_theme"
+    private const val KEY_POSITION = "banner_position"
+    private const val KEY_MUTED = "banner_muted"
+    private const val KEY_HISTORY = "notify_history"
 
     private const val TOKEN_LENGTH = 8
 
@@ -68,6 +71,33 @@ object Prefs {
     /** 保存主题 id。UI 切换后立即生效，不需要重启服务。 */
     fun setThemeId(context: Context, id: String) {
         prefs(context).edit().putString(KEY_THEME, id).apply()
+    }
+
+    /** 读取默认横幅方位（top, bottom, top-right, bottom-right, top-left, bottom-left） */
+    fun getBannerPosition(context: Context): String =
+        prefs(context).getString(KEY_POSITION, "top") ?: "top"
+
+    /** 保存默认横幅方位 */
+    fun setBannerPosition(context: Context, position: String) {
+        prefs(context).edit().putString(KEY_POSITION, position.trim().lowercase()).apply()
+    }
+
+    /** 读取是否处于闭关免扰（全局静音）模式 */
+    fun isMuted(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_MUTED, false)
+
+    /** 设置闭关免扰（全局静音）模式 */
+    fun setMuted(context: Context, muted: Boolean) {
+        prefs(context).edit().putBoolean(KEY_MUTED, muted).apply()
+    }
+
+    /** 读取历史记录 JSON 字符串 */
+    fun getHistoryRaw(context: Context): String? =
+        prefs(context).getString(KEY_HISTORY, null)
+
+    /** 保存历史记录 JSON 字符串 */
+    fun setHistoryRaw(context: Context, rawJson: String) {
+        prefs(context).edit().putString(KEY_HISTORY, rawJson).apply()
     }
 
     private fun generateToken(): String {
